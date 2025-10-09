@@ -1,0 +1,44 @@
+apiVersion: 1
+
+datasources:
+  # InfluxDB v2 for k6 metrics
+  - name: InfluxDB-k6
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    database: k6-bucket
+    user: admin
+    secureJsonData:
+      token: k6-token-secret
+    jsonData:
+      version: Flux
+      organization: k6-org
+      defaultBucket: k6-bucket
+      tlsSkipVerify: true
+    isDefault: true
+    editable: true
+
+  # Prometheus for system and application metrics
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: false
+    editable: true
+    jsonData:
+      timeInterval: "5s"
+      queryTimeout: "60s"
+      httpMethod: "POST"
+
+  # InfluxDB v1 compatibility (if needed for legacy dashboards)
+  - name: InfluxDB-v1
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    database: k6
+    user: admin
+    password: adminpassword
+    isDefault: false
+    editable: true
+    jsonData:
+      timeInterval: "5s"

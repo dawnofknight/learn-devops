@@ -1,0 +1,570 @@
+@Library('jenkins-shared-library') _
+
+pipeline {
+    agent any
+    
+    environment {
+        // Application settings
+        APP_NAME = 'quote-app'
+        IMAGE_TAG = "${env.BUILD_TAG ?: 'latest'}"
+        DOCKER_REGISTRY = credentials('docker-registry-url')
+        
+        // k6 Performance Testing settings
+        K6_VERSION = '0.47.0'
+        K6_RESULTS_DIR = 'k6-results'
+        INFLUXDB_URL = credentials('influxdb-url')
+        INFLUXDB_TOKEN = credentials('influxdb-token')
+        GRAFANA_URL = credentials('grafana-url')
+        
+        // Performance test thresholds
+        LOAD_TEST_DURATION = '10m'
+        STRESS_TEST_DURATION = '15m'
+        SPIKE_TEST_DURATION = '5m'
+        DDOS_TEST_DURATION = '3m'
+        
+        // Environment URLs
+        STAGING_URL = credentials('staging-app-url')
+        PRODUCTION_URL = credentials('production-app-url')
+        
+        // Notification settings
+        SLACK_CHANNEL = '#devops-alerts'
+        PERFORMANCE_SLACK_CHANNEL = '#performance-alerts'
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 2, unit: 'HOURS')
+        timestamps()
+        ansiColor('xterm')
+        skipDefaultCheckout()
+    }
+    
+    parameters {
+        choice(
+            name: 'PERFORMANCE_TEST_SUITE',
+            choices: ['all', 'load', 'stress', 'spike', 'ddos', 'custom'],
+            description: 'Select performance test suite to run'
+        )
+        choice(
+            name: 'TEST_ENVIRONMENT',
+            choices: ['staging', 'production', 'local'],
+            description: 'Target environment for performance testing'
+        )
+        string(
+            name: 'VIRTUAL_USERS',
+            defaultValue: '100',
+            description: 'Number of virtual users for load testing'
+        )
+        string(
+            name: 'TEST_DURATION',
+            defaultValue: '10m',
+            description: 'Duration for performance tests (e.g., 10m, 30s, 1h)'
+        )
+        booleanParam(
+            name: 'ENABLE_MONITORING',
+            defaultValue: true,
+            description: 'Enable real-time monitoring during tests'
+        )
+        booleanParam(
+            name: 'GENERATE_REPORTS',
+            defaultValue: true,
+            description: 'Generate detailed performance reports'
+        )
+        booleanParam(
+            name: 'FAIL_ON_THRESHOLD_BREACH',
+            defaultValue: true,
+            description: 'Fail pipeline if performance thresholds are breached'
+        )
+    }
+    
+    stages {
+        stage('Checkout & Setup') {
+            steps {
+                script {
+                    // Checkout code
+                    checkout scm
+                    
+                    // Set build information
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.BUILD_TIMESTAMP = sh(
+                        script: 'date +"%Y%m%d_%H%M%S"',
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Create results directory
+                    sh "mkdir -p ${env.K6_RESULTS_DIR}"
+                    
+                    // Set target URL based on environment
+                    switch(params.TEST_ENVIRONMENT) {
+                        case 'staging':
+                            env.TARGET_URL = env.STAGING_URL
+                            break
+                        case 'production':
+                            env.TARGET_URL = env.PRODUCTION_URL
+                            break
+                        default:
+                            env.TARGET_URL = 'http://localhost:3000'
+                    }
+                    
+                    echo "Performance testing target: ${env.TARGET_URL}"
+                }
+            }
+        }
+        
+        stage('Install k6') {
+            steps {
+                script {
+                    // Install k6 using Docker
+                    sh """
+                        docker pull grafana/k6:${env.K6_VERSION}
+                        
+                        # Verify k6 installation
+                        docker run --rm grafana/k6:${env.K6_VERSION} version
+                    """
+                }
+            }
+        }
+        
+        stage('Prepare Test Environment') {
+            when {
+                expression { params.TEST_ENVIRONMENT == 'local' }
+            }
+            steps {
+                script {
+                    echo "Starting local test environment..."
+                    
+                    // Start application stack for testing
+                    sh """
+                        cd modules/module-8-k6-performance
+                        docker-compose up -d app influxdb grafana prometheus
+                        
+                        # Wait for services to be ready
+                        sleep 30
+                        
+                        # Health check
+                        curl -f http://localhost:3000/api/health || exit 1
+                    """
+                    
+                    env.TARGET_URL = 'http://host.docker.internal:3000'
+                }
+            }
+        }
+        
+        stage('Performance Testing') {
+            parallel {
+                stage('Load Testing') {
+                    when {
+                        anyOf {
+                            expression { params.PERFORMANCE_TEST_SUITE == 'all' }
+                            expression { params.PERFORMANCE_TEST_SUITE == 'load' }
+                        }
+                    }
+                    steps {
+                        script {
+                            echo "🚀 Running Load Tests..."
+                            
+                            def loadTestResults = [:]
+                            
+                            // Basic Load Test
+                            try {
+                                sh """
+                                    docker run --rm \
+                                        -v \$(pwd)/modules/module-8-k6-performance:/scripts \
+                                        -v \$(pwd)/${env.K6_RESULTS_DIR}:/results \
+                                        -e TARGET_URL=${env.TARGET_URL} \
+                                        -e VIRTUAL_USERS=${params.VIRTUAL_USERS} \
+                                        -e DURATION=${params.TEST_DURATION} \
+                                        --network host \
+                                        grafana/k6:${env.K6_VERSION} run \
+                                        --out json=/results/load-test-basic-${env.BUILD_TIMESTAMP}.json \
+                                        --out influxdb=${env.INFLUXDB_URL} \
+                                        /scripts/tests/load/basic-load-test.js
+                                """
+                                loadTestResults.basic = 'PASSED'
+                            } catch (Exception e) {
+                                loadTestResults.basic = 'FAILED'
+                                if (params.FAIL_ON_THRESHOLD_BREACH) {
+                                    error "Basic load test failed: ${e.message}"
+                                }
+                            }
+                            
+                            // Sustained Load Test
+                            try {
+                                sh """
+                                    docker run --rm \
+                                        -v \$(pwd)/modules/module-8-k6-performance:/scripts \
+                                        -v \$(pwd)/${env.K6_RESULTS_DIR}:/results \
+                                        -e TARGET_URL=${env.TARGET_URL} \
+                                        --network host \
+                                        grafana/k6:${env.K6_VERSION} run \
+                                        --out json=/results/load-test-sustained-${env.BUILD_TIMESTAMP}.json \
+                                        --out influxdb=${env.INFLUXDB_URL} \
+                                        /scripts/tests/load/sustained-load-test.js
+                                """
+                                loadTestResults.sustained = 'PASSED'
+                            } catch (Exception e) {
+                                loadTestResults.sustained = 'FAILED'
+                                if (params.FAIL_ON_THRESHOLD_BREACH) {
+                                    error "Sustained load test failed: ${e.message}"
+                                }
+                            }
+                            
+                            env.LOAD_TEST_RESULTS = loadTestResults.toString()
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: "${env.K6_RESULTS_DIR}/load-test-*-${env.BUILD_TIMESTAMP}.json", allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('Stress Testing') {
+                    when {
+                        anyOf {
+                            expression { params.PERFORMANCE_TEST_SUITE == 'all' }
+                            expression { params.PERFORMANCE_TEST_SUITE == 'stress' }
+                        }
+                    }
+                    steps {
+                        script {
+                            echo "💪 Running Stress Tests..."
+                            
+                            try {
+                                sh """
+                                    docker run --rm \
+                                        -v \$(pwd)/modules/module-8-k6-performance:/scripts \
+                                        -v \$(pwd)/${env.K6_RESULTS_DIR}:/results \
+                                        -e TARGET_URL=${env.TARGET_URL} \
+                                        --network host \
+                                        grafana/k6:${env.K6_VERSION} run \
+                                        --out json=/results/stress-test-${env.BUILD_TIMESTAMP}.json \
+                                        --out influxdb=${env.INFLUXDB_URL} \
+                                        /scripts/tests/stress/stress-test.js
+                                """
+                                env.STRESS_TEST_RESULT = 'PASSED'
+                            } catch (Exception e) {
+                                env.STRESS_TEST_RESULT = 'FAILED'
+                                if (params.FAIL_ON_THRESHOLD_BREACH) {
+                                    error "Stress test failed: ${e.message}"
+                                }
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: "${env.K6_RESULTS_DIR}/stress-test-${env.BUILD_TIMESTAMP}.json", allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('Spike Testing') {
+                    when {
+                        anyOf {
+                            expression { params.PERFORMANCE_TEST_SUITE == 'all' }
+                            expression { params.PERFORMANCE_TEST_SUITE == 'spike' }
+                        }
+                    }
+                    steps {
+                        script {
+                            echo "⚡ Running Spike Tests..."
+                            
+                            try {
+                                sh """
+                                    docker run --rm \
+                                        -v \$(pwd)/modules/module-8-k6-performance:/scripts \
+                                        -v \$(pwd)/${env.K6_RESULTS_DIR}:/results \
+                                        -e TARGET_URL=${env.TARGET_URL} \
+                                        --network host \
+                                        grafana/k6:${env.K6_VERSION} run \
+                                        --out json=/results/spike-test-${env.BUILD_TIMESTAMP}.json \
+                                        --out influxdb=${env.INFLUXDB_URL} \
+                                        /scripts/tests/spike/spike-test.js
+                                """
+                                env.SPIKE_TEST_RESULT = 'PASSED'
+                            } catch (Exception e) {
+                                env.SPIKE_TEST_RESULT = 'FAILED'
+                                if (params.FAIL_ON_THRESHOLD_BREACH) {
+                                    error "Spike test failed: ${e.message}"
+                                }
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: "${env.K6_RESULTS_DIR}/spike-test-${env.BUILD_TIMESTAMP}.json", allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('DDoS Simulation') {
+                    when {
+                        anyOf {
+                            expression { params.PERFORMANCE_TEST_SUITE == 'all' }
+                            expression { params.PERFORMANCE_TEST_SUITE == 'ddos' }
+                        }
+                        not {
+                            expression { params.TEST_ENVIRONMENT == 'production' }
+                        }
+                    }
+                    steps {
+                        script {
+                            echo "🛡️ Running DDoS Simulation Tests..."
+                            
+                            // Only run DDoS tests in non-production environments
+                            if (params.TEST_ENVIRONMENT == 'production') {
+                                echo "⚠️ Skipping DDoS tests in production environment"
+                                return
+                            }
+                            
+                            try {
+                                sh """
+                                    docker run --rm \
+                                        -v \$(pwd)/modules/module-8-k6-performance:/scripts \
+                                        -v \$(pwd)/${env.K6_RESULTS_DIR}:/results \
+                                        -e TARGET_URL=${env.TARGET_URL} \
+                                        --network host \
+                                        grafana/k6:${env.K6_VERSION} run \
+                                        --out json=/results/ddos-test-${env.BUILD_TIMESTAMP}.json \
+                                        --out influxdb=${env.INFLUXDB_URL} \
+                                        /scripts/tests/ddos/ddos-simulation.js
+                                """
+                                env.DDOS_TEST_RESULT = 'PASSED'
+                            } catch (Exception e) {
+                                env.DDOS_TEST_RESULT = 'FAILED'
+                                echo "⚠️ DDoS simulation completed with issues: ${e.message}"
+                                // Don't fail pipeline for DDoS tests as they're meant to stress the system
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: "${env.K6_RESULTS_DIR}/ddos-test-${env.BUILD_TIMESTAMP}.json", allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Generate Performance Reports') {
+            when {
+                expression { params.GENERATE_REPORTS }
+            }
+            steps {
+                script {
+                    echo "📊 Generating Performance Reports..."
+                    
+                    // Generate HTML reports from JSON results
+                    sh """
+                        # Install k6-reporter if not available
+                        npm install -g k6-reporter || true
+                        
+                        # Generate reports for each test type
+                        for result_file in ${env.K6_RESULTS_DIR}/*.json; do
+                            if [ -f "\$result_file" ]; then
+                                base_name=\$(basename "\$result_file" .json)
+                                echo "Generating report for \$base_name"
+                                
+                                # Create HTML report
+                                k6-reporter "\$result_file" --output "${env.K6_RESULTS_DIR}/\${base_name}-report.html" || true
+                            fi
+                        done
+                        
+                        # Generate summary report
+                        cat > ${env.K6_RESULTS_DIR}/performance-summary-${env.BUILD_TIMESTAMP}.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Performance Test Summary - Build ${env.BUILD_NUMBER}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background: #f4f4f4; padding: 20px; border-radius: 5px; }
+        .test-result { margin: 10px 0; padding: 15px; border-radius: 5px; }
+        .passed { background: #d4edda; border-left: 5px solid #28a745; }
+        .failed { background: #f8d7da; border-left: 5px solid #dc3545; }
+        .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+        .metric { background: #e9ecef; padding: 15px; border-radius: 5px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 Performance Test Summary</h1>
+        <p><strong>Build:</strong> ${env.BUILD_NUMBER} | <strong>Commit:</strong> ${env.GIT_COMMIT_SHORT}</p>
+        <p><strong>Environment:</strong> ${params.TEST_ENVIRONMENT} | <strong>Target:</strong> ${env.TARGET_URL}</p>
+        <p><strong>Timestamp:</strong> ${env.BUILD_TIMESTAMP}</p>
+    </div>
+    
+    <h2>📈 Test Results</h2>
+    <div class="test-result \${env.LOAD_TEST_RESULTS?.contains('FAILED') ? 'failed' : 'passed'}">
+        <h3>Load Testing: \${env.LOAD_TEST_RESULTS ?: 'SKIPPED'}</h3>
+    </div>
+    <div class="test-result \${env.STRESS_TEST_RESULT == 'FAILED' ? 'failed' : 'passed'}">
+        <h3>Stress Testing: \${env.STRESS_TEST_RESULT ?: 'SKIPPED'}</h3>
+    </div>
+    <div class="test-result \${env.SPIKE_TEST_RESULT == 'FAILED' ? 'failed' : 'passed'}">
+        <h3>Spike Testing: \${env.SPIKE_TEST_RESULT ?: 'SKIPPED'}</h3>
+    </div>
+    <div class="test-result \${env.DDOS_TEST_RESULT == 'FAILED' ? 'failed' : 'passed'}">
+        <h3>DDoS Simulation: \${env.DDOS_TEST_RESULT ?: 'SKIPPED'}</h3>
+    </div>
+    
+    <h2>📊 Monitoring Links</h2>
+    <p><a href="${env.GRAFANA_URL}/d/k6-performance" target="_blank">📈 Grafana Dashboard</a></p>
+    <p><a href="${env.BUILD_URL}" target="_blank">🔗 Jenkins Build</a></p>
+</body>
+</html>
+EOF
+                    """
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: env.K6_RESULTS_DIR,
+                        reportFiles: 'performance-summary-*.html',
+                        reportName: 'Performance Test Report'
+                    ])
+                    
+                    archiveArtifacts artifacts: "${env.K6_RESULTS_DIR}/*.html", allowEmptyArchive: true
+                }
+            }
+        }
+        
+        stage('Performance Analysis') {
+            steps {
+                script {
+                    echo "🔍 Analyzing Performance Results..."
+                    
+                    // Parse results and check thresholds
+                    def performanceIssues = []
+                    
+                    // Check if any tests failed
+                    if (env.LOAD_TEST_RESULTS?.contains('FAILED')) {
+                        performanceIssues.add("Load testing failed - check response times and error rates")
+                    }
+                    
+                    if (env.STRESS_TEST_RESULT == 'FAILED') {
+                        performanceIssues.add("Stress testing failed - system may not handle peak load")
+                    }
+                    
+                    if (env.SPIKE_TEST_RESULT == 'FAILED') {
+                        performanceIssues.add("Spike testing failed - system recovery issues detected")
+                    }
+                    
+                    // Generate recommendations
+                    def recommendations = []
+                    if (performanceIssues.size() > 0) {
+                        recommendations.add("Review application logs for errors during peak load")
+                        recommendations.add("Check database connection pool settings")
+                        recommendations.add("Verify auto-scaling configuration")
+                        recommendations.add("Consider implementing circuit breakers")
+                        recommendations.add("Review caching strategies")
+                    }
+                    
+                    env.PERFORMANCE_ISSUES = performanceIssues.join('; ')
+                    env.PERFORMANCE_RECOMMENDATIONS = recommendations.join('; ')
+                    
+                    if (performanceIssues.size() > 0) {
+                        echo "⚠️ Performance Issues Detected:"
+                        performanceIssues.each { issue ->
+                            echo "  - ${issue}"
+                        }
+                        
+                        echo "💡 Recommendations:"
+                        recommendations.each { rec ->
+                            echo "  - ${rec}"
+                        }
+                    } else {
+                        echo "✅ All performance tests passed successfully!"
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Clean up local test environment
+                if (params.TEST_ENVIRONMENT == 'local') {
+                    sh """
+                        cd modules/module-8-k6-performance
+                        docker-compose down -v || true
+                    """
+                }
+                
+                // Archive all results
+                archiveArtifacts artifacts: "${env.K6_RESULTS_DIR}/**/*", allowEmptyArchive: true
+            }
+        }
+        
+        success {
+            script {
+                def message = """
+                ✅ *Performance Testing Success* - ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                
+                *Environment:* ${params.TEST_ENVIRONMENT}
+                *Target:* ${env.TARGET_URL}
+                *Test Suite:* ${params.PERFORMANCE_TEST_SUITE}
+                *Virtual Users:* ${params.VIRTUAL_USERS}
+                *Duration:* ${params.TEST_DURATION}
+                
+                *Results:*
+                • Load: ${env.LOAD_TEST_RESULTS ?: 'SKIPPED'}
+                • Stress: ${env.STRESS_TEST_RESULT ?: 'SKIPPED'}
+                • Spike: ${env.SPIKE_TEST_RESULT ?: 'SKIPPED'}
+                • DDoS: ${env.DDOS_TEST_RESULT ?: 'SKIPPED'}
+                
+                *Reports:* ${env.BUILD_URL}Performance_20Test_20Report/
+                *Grafana:* ${env.GRAFANA_URL}/d/k6-performance
+                """
+                
+                slackSend(
+                    channel: env.PERFORMANCE_SLACK_CHANNEL,
+                    color: 'good',
+                    message: message
+                )
+            }
+        }
+        
+        failure {
+            script {
+                def message = """
+                ❌ *Performance Testing Failed* - ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                
+                *Environment:* ${params.TEST_ENVIRONMENT}
+                *Target:* ${env.TARGET_URL}
+                *Test Suite:* ${params.PERFORMANCE_TEST_SUITE}
+                
+                *Issues:* ${env.PERFORMANCE_ISSUES ?: 'Unknown failure'}
+                *Recommendations:* ${env.PERFORMANCE_RECOMMENDATIONS ?: 'Check logs for details'}
+                
+                *Logs:* ${env.BUILD_URL}console
+                """
+                
+                slackSend(
+                    channel: env.PERFORMANCE_SLACK_CHANNEL,
+                    color: 'danger',
+                    message: message
+                )
+            }
+        }
+        
+        unstable {
+            script {
+                slackSend(
+                    channel: env.PERFORMANCE_SLACK_CHANNEL,
+                    color: 'warning',
+                    message: "⚠️ Performance Testing Unstable - ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+                )
+            }
+        }
+    }
+}

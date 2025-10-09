@@ -1,6 +1,6 @@
-# Module 7: Jenkins CI/CD
+# Module 7: Jenkins CI/CD with k6 Performance Testing
 
-This module provides a comprehensive Jenkins CI/CD setup for containerized applications, including Docker and Kubernetes integration, security scanning, automated testing, and deployment strategies.
+This module provides a comprehensive Jenkins CI/CD setup for containerized applications, including Docker and Kubernetes integration, security scanning, automated testing, deployment strategies, and integrated k6 performance testing.
 
 ## 📋 Table of Contents
 
@@ -8,6 +8,7 @@ This module provides a comprehensive Jenkins CI/CD setup for containerized appli
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Components](#components)
+- [k6 Performance Testing Integration](#k6-performance-testing-integration)
 - [Setup Instructions](#setup-instructions)
 - [Pipeline Examples](#pipeline-examples)
 - [Shared Library](#shared-library)
@@ -22,11 +23,12 @@ This module provides a comprehensive Jenkins CI/CD setup for containerized appli
 This Jenkins module demonstrates enterprise-grade CI/CD practices with:
 
 - **Automated CI/CD Pipelines**: Multi-branch, multi-environment deployment strategies
+- **Performance Testing Integration**: k6 load testing with comprehensive reporting and monitoring
 - **Security Integration**: SonarQube, Trivy, OWASP dependency scanning
 - **Container Support**: Docker image building, scanning, and registry management
 - **Kubernetes Integration**: Automated deployments with rolling, blue-green, and canary strategies
 - **Shared Libraries**: Reusable pipeline components and utilities
-- **Monitoring**: Integration with Prometheus, Grafana, and alerting systems
+- **Monitoring**: Integration with Prometheus, Grafana, InfluxDB, and alerting systems
 
 ## 🚀 Quick Start
 
@@ -110,6 +112,7 @@ After setup completion:
 |-----------|-------------|----------|
 | **Jenkins Configuration** | Master setup with plugins and security | `jenkins/` |
 | **Pipeline Examples** | Sample Jenkinsfiles for different scenarios | `pipelines/` |
+| **k6 Performance Testing** | Load testing integration and examples | `examples/k6-*` |
 | **Shared Library** | Reusable pipeline functions | `examples/shared-library/` |
 | **Docker Compose** | Complete development environment | `examples/docker-compose.jenkins.yml` |
 | **Kubernetes Manifests** | K8s deployment configurations | `examples/k8s-manifests/` |
@@ -127,10 +130,89 @@ After setup completion:
    - Feature, develop, release, and main branch strategies
    - Automated environment promotion
 
-3. **Shared Library Pipeline** (`examples/application-examples/`)
+3. **k6 Performance Testing Pipeline** (`examples/k6-*`)
+   - Integrated load testing with k6
+   - Multi-environment performance validation
+   - Comprehensive reporting and monitoring
+   - Quality gates based on performance thresholds
+
+4. **Shared Library Pipeline** (`examples/application-examples/`)
    - Standardized, reusable pipeline components
    - Configuration-driven approach
    - Enterprise-ready features
+
+## 🎯 k6 Performance Testing Integration
+
+This module includes comprehensive k6 performance testing integration with Jenkins CI/CD pipelines:
+
+### Features
+
+- **Multi-Test Suite Support**: Load, stress, spike, and DDoS simulation tests
+- **Environment-Specific Testing**: Different strategies for staging and production
+- **Branch-Based Testing**: Customized performance testing based on Git branch patterns
+- **Monitoring Integration**: InfluxDB, Grafana, and Prometheus integration
+- **Quality Gates**: Fail builds based on performance thresholds
+- **Comprehensive Reporting**: HTML reports, trend analysis, and Slack notifications
+
+### Available Examples
+
+| File | Description |
+|------|-------------|
+| `examples/k6-performance-jenkinsfile` | Dedicated k6 performance testing pipeline |
+| `examples/k6-pipeline-example.groovy` | Complete CI/CD with integrated k6 testing |
+| `examples/k6-multibranch-example.groovy` | Branch-specific performance testing strategies |
+| `examples/k6-shared-library.groovy` | Reusable k6 functions for Jenkins shared libraries |
+| `examples/runK6PerformanceTests.groovy` | Shared library function for k6 integration |
+
+### Quick Start with k6
+
+1. **Use the k6 Shared Library**:
+   ```groovy
+   @Library('k6-performance-lib') _
+   
+   pipeline {
+       agent any
+       stages {
+           stage('Performance Testing') {
+               steps {
+                   script {
+                       k6PerformanceTest([
+                           testSuite: 'load',
+                           targetUrl: 'https://your-app.com',
+                           virtualUsers: 50,
+                           duration: '5m'
+                       ])
+                   }
+               }
+           }
+       }
+   }
+   ```
+
+2. **Branch-Specific Testing**:
+   ```groovy
+   stage('Performance Testing') {
+       when {
+           anyOf {
+               branch 'main'
+               branch 'develop'
+           }
+       }
+       steps {
+           script {
+               def testStrategy = env.BRANCH_NAME == 'main' ? 'production' : 'comprehensive'
+               runK6PerformanceTests(testStrategy)
+           }
+       }
+   }
+   ```
+
+### Performance Testing Strategies
+
+- **Main Branch**: Light production-safe testing (20 VUs, 3 minutes)
+- **Develop Branch**: Comprehensive testing (100 VUs, 10 minutes)
+- **Feature Branches**: Quick validation testing (25 VUs, 3 minutes)
+- **Release Branches**: Standard testing for release validation
 
 ## 📖 Setup Instructions
 

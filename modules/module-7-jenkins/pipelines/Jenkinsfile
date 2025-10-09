@@ -399,6 +399,84 @@ pipeline {
                 }
             }
         }
+        
+        stage('Performance Testing') {
+            when {
+                anyOf {
+                    branch 'develop'
+                    branch 'main'
+                }
+            }
+            parallel {
+                stage('Load Testing') {
+                    steps {
+                        script {
+                            echo "🚀 Running k6 Load Tests..."
+                            
+                            def targetUrl = env.BRANCH_NAME == 'main' ? 
+                                sh(script: 'kubectl get service quote-app-frontend -n production -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"', returnStdout: true).trim() :
+                                sh(script: 'kubectl get service quote-app-frontend -n staging -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"', returnStdout: true).trim()
+                            
+                            if (targetUrl) {
+                                sh """
+                                    docker run --rm \
+                                        -v \$(pwd)/modules/module-8-k6-performance:/scripts \
+                                        -v \$(pwd)/k6-results:/results \
+                                        -e TARGET_URL=http://${targetUrl} \
+                                        -e VIRTUAL_USERS=50 \
+                                        -e DURATION=5m \
+                                        grafana/k6:latest run \
+                                        --out json=/results/load-test-\${BUILD_NUMBER}.json \
+                                        /scripts/tests/load/basic-load-test.js
+                                """
+                            } else {
+                                echo "⚠️ Could not determine target URL for load testing"
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'k6-results/load-test-*.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('Spike Testing') {
+                    when {
+                        branch 'develop'
+                    }
+                    steps {
+                        script {
+                            echo "⚡ Running k6 Spike Tests on Staging..."
+                            
+                            def targetUrl = sh(
+                                script: 'kubectl get service quote-app-frontend -n staging -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"',
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (targetUrl) {
+                                sh """
+                                    docker run --rm \
+                                        -v \$(pwd)/modules/module-8-k6-performance:/scripts \
+                                        -v \$(pwd)/k6-results:/results \
+                                        -e TARGET_URL=http://${targetUrl} \
+                                        grafana/k6:latest run \
+                                        --out json=/results/spike-test-\${BUILD_NUMBER}.json \
+                                        /scripts/tests/spike/spike-test.js
+                                """
+                            } else {
+                                echo "⚠️ Could not determine staging URL for spike testing"
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'k6-results/spike-test-*.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
     }
     
     post {
