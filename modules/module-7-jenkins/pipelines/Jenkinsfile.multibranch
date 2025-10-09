@@ -1,0 +1,582 @@
+pipeline {
+    agent none
+    
+    environment {
+        DOCKER_REGISTRY = 'ghcr.io'
+        IMAGE_NAME = 'quote-app'
+        SLACK_CHANNEL = '#ci-cd'
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5', daysToKeepStr: '7'))
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        skipDefaultCheckout()
+    }
+    
+    stages {
+        stage('Branch Strategy Router') {
+            parallel {
+                stage('Feature Branch Pipeline') {
+                    when {
+                        allOf {
+                            not { branch 'main' }
+                            not { branch 'develop' }
+                            not { branch 'release/*' }
+                        }
+                    }
+                    agent { label 'docker' }
+                    steps {
+                        script {
+                            runFeatureBranchPipeline()
+                        }
+                    }
+                }
+                
+                stage('Development Branch Pipeline') {
+                    when { branch 'develop' }
+                    agent { label 'docker' }
+                    steps {
+                        script {
+                            runDevelopmentPipeline()
+                        }
+                    }
+                }
+                
+                stage('Release Branch Pipeline') {
+                    when { branch 'release/*' }
+                    agent { label 'docker' }
+                    steps {
+                        script {
+                            runReleasePipeline()
+                        }
+                    }
+                }
+                
+                stage('Main Branch Pipeline') {
+                    when { branch 'main' }
+                    agent { label 'docker' }
+                    steps {
+                        script {
+                            runMainBranchPipeline()
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            node('docker') {
+                cleanWs()
+            }
+        }
+        
+        success {
+            script {
+                def branchType = getBranchType()
+                slackSend(
+                    channel: env.SLACK_CHANNEL,
+                    color: 'good',
+                    message: "✅ ${branchType} pipeline succeeded: ${env.JOB_NAME} - ${env.BRANCH_NAME} #${env.BUILD_NUMBER}"
+                )
+            }
+        }
+        
+        failure {
+            script {
+                def branchType = getBranchType()
+                slackSend(
+                    channel: env.SLACK_CHANNEL,
+                    color: 'danger',
+                    message: "❌ ${branchType} pipeline failed: ${env.JOB_NAME} - ${env.BRANCH_NAME} #${env.BUILD_NUMBER}\nLogs: ${env.BUILD_URL}console"
+                )
+            }
+        }
+    }
+}
+
+def runFeatureBranchPipeline() {
+    echo "🔧 Running Feature Branch Pipeline for: ${env.BRANCH_NAME}"
+    
+    stage('Checkout') {
+        checkout scm
+        script {
+            env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+            currentBuild.displayName = "#${env.BUILD_NUMBER} - ${env.BRANCH_NAME}"
+        }
+    }
+    
+    stage('Install Dependencies') {
+        parallel {
+            stage('Backend Dependencies') {
+                steps {
+                    dir('backend') {
+                        sh 'npm ci --prefer-offline'
+                    }
+                }
+            }
+            stage('Frontend Dependencies') {
+                steps {
+                    dir('frontend') {
+                        sh 'npm ci --prefer-offline'
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Code Quality Checks') {
+        parallel {
+            stage('Backend Lint & Type Check') {
+                steps {
+                    dir('backend') {
+                        sh 'npm run lint'
+                        sh 'npm run type-check'
+                    }
+                }
+            }
+            stage('Frontend Lint & Type Check') {
+                steps {
+                    dir('frontend') {
+                        sh 'npm run lint'
+                        sh 'npm run type-check'
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Unit Tests') {
+        parallel {
+            stage('Backend Tests') {
+                steps {
+                    dir('backend') {
+                        sh 'npm run test:unit -- --coverage'
+                    }
+                }
+                post {
+                    always {
+                        publishTestResults testResultsPattern: 'backend/junit.xml'
+                        publishCoverageGoberturaReport 'backend/coverage/cobertura-coverage.xml'
+                    }
+                }
+            }
+            stage('Frontend Tests') {
+                steps {
+                    dir('frontend') {
+                        sh 'npm run test -- --coverage --watchAll=false'
+                    }
+                }
+                post {
+                    always {
+                        publishTestResults testResultsPattern: 'frontend/junit.xml'
+                        publishCoverageGoberturaReport 'frontend/coverage/cobertura-coverage.xml'
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Build Verification') {
+        parallel {
+            stage('Backend Build') {
+                steps {
+                    dir('backend') {
+                        sh 'npm run build'
+                    }
+                }
+            }
+            stage('Frontend Build') {
+                steps {
+                    dir('frontend') {
+                        sh 'npm run build'
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Security Scan') {
+        steps {
+            sh 'npm audit --audit-level=high'
+        }
+    }
+    
+    echo "✅ Feature branch pipeline completed successfully!"
+}
+
+def runDevelopmentPipeline() {
+    echo "🚀 Running Development Pipeline for: ${env.BRANCH_NAME}"
+    
+    stage('Checkout') {
+        checkout scm
+        script {
+            env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+            env.BUILD_TAG = "dev-${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+            currentBuild.displayName = "#${env.BUILD_NUMBER} - develop"
+        }
+    }
+    
+    stage('Full Test Suite') {
+        parallel {
+            stage('Backend Pipeline') {
+                steps {
+                    dir('backend') {
+                        sh 'npm ci'
+                        sh 'npm run lint'
+                        sh 'npm run test:unit -- --coverage'
+                        sh 'npm run test:integration'
+                        sh 'npm run build'
+                    }
+                }
+            }
+            stage('Frontend Pipeline') {
+                steps {
+                    dir('frontend') {
+                        sh 'npm ci'
+                        sh 'npm run lint'
+                        sh 'npm run test -- --coverage --watchAll=false'
+                        sh 'npm run build'
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Build & Push Images') {
+        steps {
+            script {
+                // Build Docker images
+                def backendImage = docker.build("${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}-backend:${env.BUILD_TAG}", "./backend")
+                def frontendImage = docker.build("${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}-frontend:${env.BUILD_TAG}", "./frontend")
+                
+                // Push to registry
+                docker.withRegistry("https://${env.DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                    backendImage.push()
+                    backendImage.push('develop-latest')
+                    frontendImage.push()
+                    frontendImage.push('develop-latest')
+                }
+            }
+        }
+    }
+    
+    stage('Deploy to Staging') {
+        steps {
+            script {
+                // Update Kubernetes manifests
+                sh """
+                    sed -i 's|IMAGE_TAG_PLACEHOLDER|${env.BUILD_TAG}|g' k8s/staging/*.yaml
+                    kubectl apply -f k8s/staging/ --namespace=staging
+                """
+                
+                // Wait for deployment
+                sh """
+                    kubectl wait --for=condition=ready pod -l app=quote-app-backend -n staging --timeout=300s
+                    kubectl wait --for=condition=ready pod -l app=quote-app-frontend -n staging --timeout=300s
+                """
+                
+                // Health check
+                script {
+                    def stagingUrl = sh(
+                        script: 'kubectl get service quote-app-frontend -n staging -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"',
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (stagingUrl) {
+                        sh "curl -f http://${stagingUrl}/health"
+                        echo "🎯 Staging deployment successful: http://${stagingUrl}"
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Integration Tests') {
+        steps {
+            script {
+                if (fileExists('tests/integration')) {
+                    dir('tests/integration') {
+                        sh 'npm ci'
+                        sh 'STAGING_URL=${stagingUrl} npm run test'
+                    }
+                }
+            }
+        }
+    }
+    
+    echo "✅ Development pipeline completed successfully!"
+}
+
+def runReleasePipeline() {
+    echo "🎯 Running Release Pipeline for: ${env.BRANCH_NAME}"
+    
+    stage('Checkout') {
+        checkout scm
+        script {
+            env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+            env.RELEASE_VERSION = env.BRANCH_NAME.replaceAll('release/', '')
+            env.BUILD_TAG = "release-${env.RELEASE_VERSION}-${env.BUILD_NUMBER}"
+            currentBuild.displayName = "#${env.BUILD_NUMBER} - ${env.RELEASE_VERSION}"
+        }
+    }
+    
+    stage('Release Quality Gates') {
+        parallel {
+            stage('Full Test Suite') {
+                steps {
+                    sh '''
+                        cd backend && npm ci && npm run test:all
+                        cd ../frontend && npm ci && npm run test:all
+                    '''
+                }
+            }
+            stage('Security & Compliance') {
+                steps {
+                    sh 'npm audit --audit-level=moderate'
+                    sh 'docker run --rm -v $(pwd):/app owasp/dependency-check --scan /app --format XML'
+                }
+            }
+            stage('Performance Tests') {
+                steps {
+                    script {
+                        if (fileExists('tests/performance')) {
+                            dir('tests/performance') {
+                                sh 'npm ci && npm run test'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Build Release Artifacts') {
+        steps {
+            script {
+                // Build and tag release images
+                def backendImage = docker.build("${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}-backend:${env.BUILD_TAG}", "./backend")
+                def frontendImage = docker.build("${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}-frontend:${env.BUILD_TAG}", "./frontend")
+                
+                docker.withRegistry("https://${env.DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                    backendImage.push()
+                    backendImage.push("release-${env.RELEASE_VERSION}")
+                    frontendImage.push()
+                    frontendImage.push("release-${env.RELEASE_VERSION}")
+                }
+            }
+        }
+    }
+    
+    stage('Deploy to Pre-Production') {
+        steps {
+            input message: "Deploy release ${env.RELEASE_VERSION} to pre-production?", ok: 'Deploy'
+            
+            sh """
+                sed -i 's|IMAGE_TAG_PLACEHOLDER|${env.BUILD_TAG}|g' k8s/pre-production/*.yaml
+                kubectl apply -f k8s/pre-production/ --namespace=pre-production
+                kubectl wait --for=condition=ready pod -l app=quote-app -n pre-production --timeout=600s
+            """
+        }
+    }
+    
+    stage('Release Validation') {
+        steps {
+            script {
+                // Run comprehensive validation tests
+                if (fileExists('tests/release-validation')) {
+                    dir('tests/release-validation') {
+                        sh 'npm ci && npm run validate-release'
+                    }
+                }
+            }
+        }
+    }
+    
+    echo "✅ Release pipeline completed successfully!"
+}
+
+def runMainBranchPipeline() {
+    echo "🏆 Running Production Pipeline for: ${env.BRANCH_NAME}"
+    
+    stage('Checkout') {
+        checkout scm
+        script {
+            env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+            env.BUILD_TAG = "prod-${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+            currentBuild.displayName = "#${env.BUILD_NUMBER} - PRODUCTION"
+        }
+    }
+    
+    stage('Production Quality Gates') {
+        parallel {
+            stage('Comprehensive Testing') {
+                steps {
+                    sh '''
+                        cd backend && npm ci && npm run test:all && npm run test:e2e
+                        cd ../frontend && npm ci && npm run test:all && npm run test:e2e
+                    '''
+                }
+            }
+            stage('Security Validation') {
+                steps {
+                    sh 'npm audit --audit-level=low'
+                    sh 'docker run --rm -v $(pwd):/app owasp/dependency-check --scan /app --format XML --failOnCVSS 7'
+                }
+            }
+            stage('Performance Validation') {
+                steps {
+                    script {
+                        if (fileExists('tests/performance')) {
+                            dir('tests/performance') {
+                                sh 'npm ci && npm run test:production'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Build Production Images') {
+        steps {
+            script {
+                def backendImage = docker.build("${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}-backend:${env.BUILD_TAG}", "./backend")
+                def frontendImage = docker.build("${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}-frontend:${env.BUILD_TAG}", "./frontend")
+                
+                docker.withRegistry("https://${env.DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                    backendImage.push()
+                    backendImage.push('latest')
+                    backendImage.push('stable')
+                    frontendImage.push()
+                    frontendImage.push('latest')
+                    frontendImage.push('stable')
+                }
+            }
+        }
+    }
+    
+    stage('Production Deployment Approval') {
+        steps {
+            script {
+                def deploymentInfo = input(
+                    message: 'Deploy to Production?',
+                    ok: 'Deploy to Production',
+                    parameters: [
+                        choice(
+                            name: 'DEPLOYMENT_STRATEGY',
+                            choices: ['rolling', 'blue-green', 'canary'],
+                            description: 'Select deployment strategy'
+                        ),
+                        text(
+                            name: 'DEPLOYMENT_NOTES',
+                            defaultValue: '',
+                            description: 'Deployment notes (optional)'
+                        )
+                    ],
+                    submitterParameter: 'APPROVER'
+                )
+                
+                env.DEPLOYMENT_STRATEGY = deploymentInfo.DEPLOYMENT_STRATEGY
+                env.DEPLOYMENT_NOTES = deploymentInfo.DEPLOYMENT_NOTES
+                env.APPROVER = deploymentInfo.APPROVER
+                
+                echo "Production deployment approved by: ${env.APPROVER}"
+                echo "Strategy: ${env.DEPLOYMENT_STRATEGY}"
+                echo "Notes: ${env.DEPLOYMENT_NOTES}"
+            }
+        }
+    }
+    
+    stage('Production Deployment') {
+        steps {
+            script {
+                switch(env.DEPLOYMENT_STRATEGY) {
+                    case 'blue-green':
+                        deployBlueGreenProduction()
+                        break
+                    case 'canary':
+                        deployCanaryProduction()
+                        break
+                    default:
+                        deployRollingProduction()
+                }
+            }
+        }
+    }
+    
+    stage('Post-Deployment Validation') {
+        steps {
+            script {
+                // Health checks
+                sh '''
+                    kubectl wait --for=condition=ready pod -l app=quote-app -n production --timeout=600s
+                '''
+                
+                // Smoke tests
+                def prodUrl = sh(
+                    script: 'kubectl get service quote-app-frontend -n production -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"',
+                    returnStdout: true
+                ).trim()
+                
+                if (prodUrl) {
+                    sh "curl -f http://${prodUrl}/health"
+                    echo "🎉 Production deployment successful: http://${prodUrl}"
+                }
+                
+                // Run production smoke tests
+                if (fileExists('tests/smoke')) {
+                    dir('tests/smoke') {
+                        sh "PRODUCTION_URL=${prodUrl} npm ci && npm run test"
+                    }
+                }
+            }
+        }
+    }
+    
+    stage('Create Release Tag') {
+        steps {
+            script {
+                def tagName = "v${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+                sh """
+                    git tag -a ${tagName} -m "Production release ${tagName}"
+                    git push origin ${tagName}
+                """
+                echo "Created release tag: ${tagName}"
+            }
+        }
+    }
+    
+    echo "🎉 Production pipeline completed successfully!"
+}
+
+def deployRollingProduction() {
+    echo "Executing rolling deployment to production..."
+    sh """
+        sed -i 's|IMAGE_TAG_PLACEHOLDER|${env.BUILD_TAG}|g' k8s/production/*.yaml
+        kubectl apply -f k8s/production/ --namespace=production
+        kubectl rollout status deployment/quote-app-backend -n production --timeout=600s
+        kubectl rollout status deployment/quote-app-frontend -n production --timeout=600s
+    """
+}
+
+def deployBlueGreenProduction() {
+    echo "Executing blue-green deployment to production..."
+    // Implementation similar to main Jenkinsfile but for production
+    // ... (implementation details)
+}
+
+def deployCanaryProduction() {
+    echo "Executing canary deployment to production..."
+    // Implementation similar to main Jenkinsfile but for production
+    // ... (implementation details)
+}
+
+def getBranchType() {
+    if (env.BRANCH_NAME == 'main') return 'Production'
+    if (env.BRANCH_NAME == 'develop') return 'Development'
+    if (env.BRANCH_NAME.startsWith('release/')) return 'Release'
+    return 'Feature'
+}

@@ -1,0 +1,281 @@
+@Library('jenkins-shared-library') _
+
+/**
+ * Learn Container Project CI/CD Pipeline
+ * 
+ * This pipeline demonstrates the integration of the Jenkins module
+ * with the main learn-container project.
+ */
+
+pipeline([
+    config: [
+        // Project Configuration
+        appName: 'learn-container',
+        dockerRegistry: 'ghcr.io/learn-container',
+        
+        // Multi-Module Build
+        modules: [
+            'module-1-docker-basics',
+            'module-2-docker-compose',
+            'module-3-kubernetes-basics',
+            'module-4-kubernetes-advanced',
+            'module-5-monitoring',
+            'module-6-security',
+            'module-7-jenkins'
+        ],
+        
+        // Build Configuration
+        build: [
+            parallel: true,
+            timeout: 45,
+            strategy: 'multi-module'
+        ],
+        
+        // Testing Strategy
+        testing: [
+            unit: [
+                enabled: true,
+                timeout: 20,
+                coverage: true,
+                threshold: 70
+            ],
+            integration: [
+                enabled: true,
+                timeout: 30,
+                dockerCompose: true
+            ],
+            e2e: [
+                enabled: true,
+                timeout: 40,
+                kubernetes: true,
+                environments: ['staging']
+            ],
+            security: [
+                enabled: true,
+                tools: ['trivy', 'hadolint'],
+                dockerfiles: true
+            ]
+        ],
+        
+        // Security Configuration
+        security: [
+            enableTrivyScan: true,
+            trivyConfig: [
+                severity: 'HIGH,CRITICAL',
+                scanType: ['filesystem', 'image'],
+                ignoreUnfixed: true
+            ],
+            enableHadolint: true,
+            hadolintConfig: [
+                ignoreRules: ['DL3008', 'DL3009'],
+                failureThreshold: 'error'
+            ],
+            enableOWASP: false // Not applicable for this project type
+        ],
+        
+        // Documentation and Examples
+        documentation: [
+            enabled: true,
+            formats: ['html', 'pdf'],
+            includeExamples: true,
+            validateLinks: true
+        ],
+        
+        // Deployment Strategy
+        deployment: [
+            strategy: 'rolling',
+            environments: [
+                staging: [
+                    autoPromote: true,
+                    healthCheck: true,
+                    smokeTests: true
+                ],
+                production: [
+                    approval: [
+                        required: true,
+                        approvers: ['maintainer'],
+                        timeout: '72h'
+                    ],
+                    healthCheck: true,
+                    postDeploy: [
+                        smokeTests: true,
+                        documentationUpdate: true
+                    ]
+                ]
+            ]
+        ],
+        
+        // Notifications
+        notifications: [
+            slack: [
+                enabled: true,
+                channel: '#learn-container',
+                onSuccess: true,
+                onFailure: true,
+                onApproval: true
+            ],
+            email: [
+                enabled: true,
+                recipients: [
+                    success: ['maintainer@example.com'],
+                    failure: ['maintainer@example.com', 'contributors@example.com']
+                ]
+            ]
+        ]
+    ],
+    
+    // Pipeline Stages
+    stages: [
+        'checkout',
+        'validate',
+        'test',
+        'build',
+        'security',
+        'documentation',
+        'deploy'
+    ]
+])
+
+/*
+ * Custom Pipeline Stages
+ */
+
+// Add custom validation stage
+pipeline.addStage('validate', [
+    name: '🔍 Validate Project Structure',
+    steps: {
+        script {
+            // Validate module structure
+            def modules = pipeline.config.modules
+            modules.each { module ->
+                if (!fileExists("modules/${module}")) {
+                    error("Module ${module} directory not found!")
+                }
+                
+                // Check for required files
+                def requiredFiles = ['README.md', 'Dockerfile']
+                requiredFiles.each { file ->
+                    if (!fileExists("modules/${module}/${file}")) {
+                        echo "Warning: ${file} not found in ${module}"
+                    }
+                }
+            }
+            
+            // Validate Docker Compose files
+            sh '''
+                find . -name "docker-compose*.yml" -o -name "docker-compose*.yaml" | while read file; do
+                    echo "Validating $file"
+                    docker-compose -f "$file" config -q || exit 1
+                done
+            '''
+            
+            // Validate Kubernetes manifests
+            sh '''
+                find . -name "*.yaml" -path "*/k8s-manifests/*" | while read file; do
+                    echo "Validating Kubernetes manifest: $file"
+                    kubectl --dry-run=client apply -f "$file" || exit 1
+                done
+            '''
+        }
+    }
+])
+
+// Add documentation generation stage
+pipeline.addStage('documentation', [
+    name: '📚 Generate Documentation',
+    steps: {
+        script {
+            // Generate module documentation
+            pipeline.config.modules.each { module ->
+                dir("modules/${module}") {
+                    if (fileExists('docs/')) {
+                        sh '''
+                            # Generate documentation if tools are available
+                            if command -v mkdocs >/dev/null 2>&1; then
+                                mkdocs build
+                            elif command -v sphinx-build >/dev/null 2>&1; then
+                                sphinx-build -b html docs/ docs/_build/
+                            fi
+                        '''
+                    }
+                }
+            }
+            
+            // Generate project overview
+            writeFile file: 'PROJECT_STATUS.md', text: """
+# Learn Container Project - Build ${BUILD_NUMBER}
+
+## Build Information
+- **Build Number**: ${BUILD_NUMBER}
+- **Git Commit**: ${GIT_COMMIT}
+- **Branch**: ${BRANCH_NAME}
+- **Build Date**: ${BUILD_TIMESTAMP}
+
+## Modules Status
+${pipeline.config.modules.collect { "- ✅ ${it}" }.join('\n')}
+
+## Test Results
+- Unit Tests: ${currentBuild.result ?: 'PASSED'}
+- Integration Tests: ${currentBuild.result ?: 'PASSED'}
+- Security Scans: ${currentBuild.result ?: 'PASSED'}
+
+## Deployment Status
+- Staging: ${env.DEPLOY_STAGING_STATUS ?: 'PENDING'}
+- Production: ${env.DEPLOY_PROD_STATUS ?: 'PENDING'}
+"""
+            
+            archiveArtifacts artifacts: 'PROJECT_STATUS.md', fingerprint: true
+        }
+    }
+])
+
+/*
+ * Branch-Specific Behavior
+ */
+if (env.BRANCH_NAME.startsWith('feature/')) {
+    // Feature branches: basic validation and testing
+    pipeline.config.deployment.environments = []
+    pipeline.config.testing.e2e.enabled = false
+    
+} else if (env.BRANCH_NAME == 'develop') {
+    // Develop branch: full testing, deploy to staging
+    pipeline.config.deployment.environments = ['staging']
+    
+} else if (env.BRANCH_NAME == 'main') {
+    // Main branch: full pipeline with production deployment
+    pipeline.config.deployment.environments = ['staging', 'production']
+    
+    // Add release tagging
+    pipeline.onSuccess {
+        script {
+            def version = sh(
+                script: "git describe --tags --abbrev=0 2>/dev/null || echo 'v1.0.0'",
+                returnStdout: true
+            ).trim()
+            
+            def nextVersion = incrementVersion(version)
+            
+            sh """
+                git tag -a ${nextVersion} -m "Release ${nextVersion} - Build ${BUILD_NUMBER}"
+                git push origin ${nextVersion}
+            """
+            
+            // Create GitHub release
+            sh """
+                gh release create ${nextVersion} \\
+                    --title "Learn Container ${nextVersion}" \\
+                    --notes "Automated release from Jenkins build ${BUILD_NUMBER}" \\
+                    --latest
+            """
+        }
+    }
+}
+
+/*
+ * Utility Functions
+ */
+def incrementVersion(String version) {
+    def parts = version.replaceAll('^v', '').split('\\.')
+    def patch = (parts[2] as Integer) + 1
+    return "v${parts[0]}.${parts[1]}.${patch}"
+}

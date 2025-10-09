@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins
+  labels:
+    name: jenkins
+    purpose: ci-cd
+    environment: production
+  annotations:
+    description: "Jenkins CI/CD namespace for containerized deployments"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    name: staging
+    purpose: deployment
+    environment: staging
+  annotations:
+    description: "Staging environment for application deployments"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    name: production
+    purpose: deployment
+    environment: production
+  annotations:
+    description: "Production environment for application deployments"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+    purpose: observability
+    environment: shared
+  annotations:
+    description: "Monitoring and observability tools namespace"

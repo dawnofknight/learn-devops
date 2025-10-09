@@ -1,0 +1,548 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = 'ghcr.io'
+        IMAGE_NAME = 'quote-app'
+        KUBECONFIG = credentials('kubeconfig')
+        DOCKER_CREDENTIALS = credentials('docker-registry-credentials')
+        SLACK_CHANNEL = '#deployments'
+        SONARQUBE_TOKEN = credentials('sonarqube-token')
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 45, unit: 'MINUTES')
+        timestamps()
+        skipDefaultCheckout()
+        parallelsAlwaysFailFast()
+    }
+    
+    parameters {
+        choice(
+            name: 'DEPLOYMENT_STRATEGY',
+            choices: ['rolling', 'blue-green', 'canary'],
+            description: 'Choose deployment strategy for production'
+        )
+        booleanParam(
+            name: 'SKIP_TESTS',
+            defaultValue: false,
+            description: 'Skip test execution (not recommended for production)'
+        )
+        booleanParam(
+            name: 'FORCE_DEPLOY',
+            defaultValue: false,
+            description: 'Force deployment even if quality gates fail'
+        )
+        string(
+            name: 'CUSTOM_TAG',
+            defaultValue: '',
+            description: 'Custom Docker image tag (optional)'
+        )
+    }
+    
+    stages {
+        stage('Checkout & Setup') {
+            steps {
+                checkout scm
+                script {
+                    // Set build information
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.BUILD_TAG = params.CUSTOM_TAG ?: "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+                    env.IMAGE_TAG = "${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}:${env.BUILD_TAG}"
+                    
+                    // Set build display name
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} - ${env.GIT_COMMIT_SHORT}"
+                    currentBuild.description = "Branch: ${env.BRANCH_NAME} | Strategy: ${params.DEPLOYMENT_STRATEGY}"
+                }
+                
+                // Cache dependencies
+                cache(maxCacheSize: 250, caches: [
+                    arbitraryFileCache(
+                        path: 'backend/node_modules',
+                        includes: '**/*',
+                        fingerprinting: true
+                    ),
+                    arbitraryFileCache(
+                        path: 'frontend/node_modules',
+                        includes: '**/*',
+                        fingerprinting: true
+                    )
+                ]) {
+                    sh '''
+                        echo "Installing dependencies..."
+                        cd backend && npm ci --prefer-offline --no-audit
+                        cd ../frontend && npm ci --prefer-offline --no-audit
+                    '''
+                }
+            }
+        }
+        
+        stage('Code Quality & Security') {
+            when {
+                not { params.SKIP_TESTS }
+            }
+            parallel {
+                stage('Backend Analysis') {
+                    steps {
+                        dir('backend') {
+                            // Linting
+                            sh 'npm run lint -- --format=checkstyle --output-file=lint-results.xml || true'
+                            
+                            // Security audit
+                            sh 'npm audit --audit-level=high --json > audit-results.json || true'
+                            
+                            // Type checking
+                            sh 'npm run type-check || true'
+                        }
+                        
+                        // Archive results
+                        archiveArtifacts artifacts: 'backend/lint-results.xml,backend/audit-results.json', allowEmptyArchive: true
+                        
+                        // Publish lint results
+                        recordIssues(
+                            enabledForFailure: true,
+                            tools: [checkStyle(pattern: 'backend/lint-results.xml')]
+                        )
+                    }
+                }
+                
+                stage('Frontend Analysis') {
+                    steps {
+                        dir('frontend') {
+                            // Linting
+                            sh 'npm run lint -- --format=checkstyle --output-file=lint-results.xml || true'
+                            
+                            // Security audit
+                            sh 'npm audit --audit-level=high --json > audit-results.json || true'
+                            
+                            // Type checking
+                            sh 'npm run type-check || true'
+                        }
+                        
+                        // Archive results
+                        archiveArtifacts artifacts: 'frontend/lint-results.xml,frontend/audit-results.json', allowEmptyArchive: true
+                        
+                        // Publish lint results
+                        recordIssues(
+                            enabledForFailure: true,
+                            tools: [checkStyle(pattern: 'frontend/lint-results.xml')]
+                        )
+                    }
+                }
+                
+                stage('SonarQube Analysis') {
+                    steps {
+                        script {
+                            def scannerHome = tool 'SonarQubeScanner'
+                            withSonarQubeEnv('SonarQube') {
+                                sh """
+                                    ${scannerHome}/bin/sonar-scanner \
+                                        -Dsonar.projectKey=quote-app \
+                                        -Dsonar.projectName='Quote Application' \
+                                        -Dsonar.projectVersion=${env.BUILD_TAG} \
+                                        -Dsonar.sources=backend/src,frontend/src \
+                                        -Dsonar.tests=backend/tests,frontend/src/__tests__ \
+                                        -Dsonar.javascript.lcov.reportPaths=backend/coverage/lcov.info,frontend/coverage/lcov.info \
+                                        -Dsonar.eslint.reportPaths=backend/lint-results.xml,frontend/lint-results.xml
+                                """
+                            }
+                        }
+                        
+                        // Wait for quality gate
+                        timeout(time: 5, unit: 'MINUTES') {
+                            script {
+                                def qg = waitForQualityGate()
+                                if (qg.status != 'OK' && !params.FORCE_DEPLOY) {
+                                    error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Testing') {
+            when {
+                not { params.SKIP_TESTS }
+            }
+            parallel {
+                stage('Backend Tests') {
+                    steps {
+                        dir('backend') {
+                            // Unit tests
+                            sh 'npm run test:unit -- --coverage --ci --testResultsProcessor=jest-junit'
+                            
+                            // Integration tests
+                            sh 'npm run test:integration -- --ci --testResultsProcessor=jest-junit'
+                        }
+                        
+                        // Publish test results
+                        publishTestResults testResultsPattern: 'backend/junit.xml'
+                        
+                        // Publish coverage
+                        publishCoverageGoberturaReport 'backend/coverage/cobertura-coverage.xml'
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'backend/coverage/**/*', allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('Frontend Tests') {
+                    steps {
+                        dir('frontend') {
+                            // Unit tests
+                            sh 'npm run test -- --coverage --ci --testResultsProcessor=jest-junit --watchAll=false'
+                            
+                            // E2E tests (if available)
+                            script {
+                                if (fileExists('cypress.json')) {
+                                    sh 'npm run test:e2e:headless || true'
+                                }
+                            }
+                        }
+                        
+                        // Publish test results
+                        publishTestResults testResultsPattern: 'frontend/junit.xml'
+                        
+                        // Publish coverage
+                        publishCoverageGoberturaReport 'frontend/coverage/cobertura-coverage.xml'
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'frontend/coverage/**/*', allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('API Tests') {
+                    steps {
+                        script {
+                            if (fileExists('tests/api')) {
+                                dir('tests/api') {
+                                    sh 'npm ci'
+                                    sh 'npm run test -- --reporter=json --reporter-json-export=api-test-results.json'
+                                }
+                                archiveArtifacts artifacts: 'tests/api/api-test-results.json', allowEmptyArchive: true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build & Package') {
+            parallel {
+                stage('Backend Build') {
+                    steps {
+                        dir('backend') {
+                            sh 'npm run build'
+                            
+                            // Build Docker image
+                            script {
+                                def backendImage = docker.build("${env.IMAGE_TAG}-backend", ".")
+                                env.BACKEND_IMAGE = backendImage.id
+                            }
+                        }
+                    }
+                }
+                
+                stage('Frontend Build') {
+                    steps {
+                        dir('frontend') {
+                            sh 'npm run build'
+                            
+                            // Build Docker image
+                            script {
+                                def frontendImage = docker.build("${env.IMAGE_TAG}-frontend", ".")
+                                env.FRONTEND_IMAGE = frontendImage.id
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security Scanning') {
+            parallel {
+                stage('Container Security Scan') {
+                    steps {
+                        script {
+                            // Scan backend image
+                            sh """
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                                    aquasec/trivy image --format json --output backend-security-report.json ${env.BACKEND_IMAGE}
+                            """
+                            
+                            // Scan frontend image
+                            sh """
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                                    aquasec/trivy image --format json --output frontend-security-report.json ${env.FRONTEND_IMAGE}
+                            """
+                        }
+                        
+                        archiveArtifacts artifacts: '*-security-report.json', allowEmptyArchive: true
+                    }
+                }
+                
+                stage('OWASP Dependency Check') {
+                    steps {
+                        dependencyCheck additionalArguments: '--format XML --format JSON', odcInstallation: 'OWASP-DC'
+                        dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+                    }
+                }
+            }
+        }
+        
+        stage('Push Images') {
+            steps {
+                script {
+                    docker.withRegistry("https://${env.DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                        // Push backend image
+                        def backendImage = docker.image(env.BACKEND_IMAGE)
+                        backendImage.push("${env.BUILD_TAG}-backend")
+                        
+                        // Push frontend image
+                        def frontendImage = docker.image(env.FRONTEND_IMAGE)
+                        frontendImage.push("${env.BUILD_TAG}-frontend")
+                        
+                        // Tag as latest for main branch
+                        if (env.BRANCH_NAME == 'main') {
+                            backendImage.push('latest-backend')
+                            frontendImage.push('latest-frontend')
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                anyOf {
+                    branch 'develop'
+                    branch 'main'
+                }
+            }
+            steps {
+                script {
+                    // Update Kubernetes manifests with new image tags
+                    sh """
+                        sed -i 's|IMAGE_TAG_PLACEHOLDER|${env.BUILD_TAG}|g' k8s/staging/*.yaml
+                        kubectl apply -f k8s/staging/ --namespace=staging
+                    """
+                    
+                    // Wait for deployment to be ready
+                    sh """
+                        kubectl wait --for=condition=ready pod -l app=quote-app-backend -n staging --timeout=300s
+                        kubectl wait --for=condition=ready pod -l app=quote-app-frontend -n staging --timeout=300s
+                    """
+                    
+                    // Run smoke tests
+                    script {
+                        def stagingUrl = sh(
+                            script: 'kubectl get service quote-app-frontend -n staging -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"',
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (stagingUrl) {
+                            sh "curl -f http://${stagingUrl}/health || exit 1"
+                            echo "Staging deployment successful: http://${stagingUrl}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    // Manual approval for production
+                    def deployApproval = input(
+                        message: 'Deploy to production?',
+                        ok: 'Deploy',
+                        parameters: [
+                            choice(
+                                name: 'CONFIRM_STRATEGY',
+                                choices: ['rolling', 'blue-green', 'canary'],
+                                description: 'Confirm deployment strategy'
+                            )
+                        ],
+                        submitterParameter: 'DEPLOYER'
+                    )
+                    
+                    env.FINAL_STRATEGY = deployApproval.CONFIRM_STRATEGY ?: params.DEPLOYMENT_STRATEGY
+                    env.DEPLOYER = deployApproval.DEPLOYER
+                    
+                    echo "Deploying to production using ${env.FINAL_STRATEGY} strategy by ${env.DEPLOYER}"
+                    
+                    // Execute deployment based on strategy
+                    switch(env.FINAL_STRATEGY) {
+                        case 'blue-green':
+                            deployBlueGreen()
+                            break
+                        case 'canary':
+                            deployCanary()
+                            break
+                        default:
+                            deployRolling()
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // Clean up Docker images
+            sh '''
+                docker image prune -f
+                docker system prune -f --volumes
+            '''
+            
+            // Archive build artifacts
+            archiveArtifacts artifacts: 'backend/dist/**/*,frontend/build/**/*', allowEmptyArchive: true
+            
+            // Clean workspace
+            cleanWs()
+        }
+        
+        success {
+            script {
+                def message = """
+                ✅ *Pipeline Success* - ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                
+                *Branch:* ${env.BRANCH_NAME}
+                *Commit:* ${env.GIT_COMMIT_SHORT}
+                *Images:* ${env.BUILD_TAG}
+                *Deployer:* ${env.DEPLOYER ?: 'System'}
+                *Strategy:* ${env.FINAL_STRATEGY ?: 'N/A'}
+                
+                *Duration:* ${currentBuild.durationString}
+                """
+                
+                slackSend(
+                    channel: env.SLACK_CHANNEL,
+                    color: 'good',
+                    message: message
+                )
+            }
+        }
+        
+        failure {
+            script {
+                def message = """
+                ❌ *Pipeline Failed* - ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                
+                *Branch:* ${env.BRANCH_NAME}
+                *Commit:* ${env.GIT_COMMIT_SHORT}
+                *Stage:* ${env.STAGE_NAME ?: 'Unknown'}
+                
+                *Duration:* ${currentBuild.durationString}
+                *Logs:* ${env.BUILD_URL}console
+                """
+                
+                slackSend(
+                    channel: env.SLACK_CHANNEL,
+                    color: 'danger',
+                    message: message
+                )
+            }
+        }
+        
+        unstable {
+            script {
+                slackSend(
+                    channel: env.SLACK_CHANNEL,
+                    color: 'warning',
+                    message: "⚠️ Pipeline Unstable - ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+                )
+            }
+        }
+    }
+}
+
+// Deployment strategy functions
+def deployRolling() {
+    echo "Executing rolling deployment..."
+    sh """
+        sed -i 's|IMAGE_TAG_PLACEHOLDER|${env.BUILD_TAG}|g' k8s/production/*.yaml
+        kubectl apply -f k8s/production/ --namespace=production
+        kubectl rollout status deployment/quote-app-backend -n production --timeout=600s
+        kubectl rollout status deployment/quote-app-frontend -n production --timeout=600s
+    """
+}
+
+def deployBlueGreen() {
+    echo "Executing blue-green deployment..."
+    
+    // Determine current environment
+    def currentEnv = sh(
+        script: 'kubectl get service quote-app-service -n production -o jsonpath="{.spec.selector.version}" || echo "blue"',
+        returnStdout: true
+    ).trim()
+    
+    def targetEnv = currentEnv == 'blue' ? 'green' : 'blue'
+    
+    echo "Current: ${currentEnv}, Target: ${targetEnv}"
+    
+    // Deploy to target environment
+    sh """
+        sed -i 's|IMAGE_TAG_PLACEHOLDER|${env.BUILD_TAG}|g' k8s/blue-green/${targetEnv}/*.yaml
+        kubectl apply -f k8s/blue-green/${targetEnv}/ --namespace=production
+        kubectl wait --for=condition=ready pod -l app=quote-app,version=${targetEnv} -n production --timeout=600s
+    """
+    
+    // Switch traffic
+    input message: "Switch traffic to ${targetEnv}?", ok: 'Switch'
+    
+    sh """
+        kubectl patch service quote-app-service -n production -p '{"spec":{"selector":{"version":"${targetEnv}"}}}'
+    """
+    
+    echo "Traffic switched to ${targetEnv}"
+}
+
+def deployCanary() {
+    echo "Executing canary deployment..."
+    
+    // Deploy canary version
+    sh """
+        sed -i 's|IMAGE_TAG_PLACEHOLDER|${env.BUILD_TAG}|g' k8s/canary/*.yaml
+        kubectl apply -f k8s/canary/ --namespace=production
+        kubectl wait --for=condition=ready pod -l app=quote-app,version=canary -n production --timeout=600s
+    """
+    
+    // Monitor canary
+    echo "Monitoring canary deployment for 5 minutes..."
+    sleep(time: 300, unit: 'SECONDS')
+    
+    // Promote or rollback
+    def promote = input(
+        message: 'Promote canary to full deployment?',
+        ok: 'Promote',
+        parameters: [
+            booleanParam(name: 'PROMOTE', defaultValue: true, description: 'Promote canary')
+        ]
+    )
+    
+    if (promote) {
+        sh """
+            kubectl scale deployment quote-app-canary -n production --replicas=3
+            kubectl scale deployment quote-app-stable -n production --replicas=0
+        """
+        echo "Canary promoted to full deployment"
+    } else {
+        sh 'kubectl delete -f k8s/canary/ --namespace=production'
+        echo "Canary deployment rolled back"
+    }
+}

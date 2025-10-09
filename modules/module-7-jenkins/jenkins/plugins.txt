@@ -1,0 +1,102 @@
+# Core plugins
+ant:latest
+build-timeout:latest
+credentials-binding:latest
+timestamper:latest
+ws-cleanup:latest
+gradle:latest
+workflow-aggregator:latest
+github-branch-source:latest
+pipeline-github-lib:latest
+pipeline-stage-view:latest
+
+# Blue Ocean
+blueocean:latest
+blueocean-pipeline-api-impl:latest
+blueocean-pipeline-editor:latest
+blueocean-autofavorite:latest
+
+# Docker integration
+docker-workflow:latest
+docker-plugin:latest
+docker-build-step:latest
+
+# Kubernetes integration
+kubernetes:latest
+kubernetes-cli:latest
+kubernetes-cd:latest
+
+# Git and SCM
+git:latest
+github:latest
+github-api:latest
+github-pullrequest:latest
+bitbucket:latest
+gitlab-plugin:latest
+
+# Security and quality
+sonar:latest
+owasp-dependency-check:latest
+warnings-ng:latest
+checkmarx:latest
+aqua-security-scanner:latest
+
+# Testing and reporting
+junit:latest
+jacoco:latest
+cobertura:latest
+htmlpublisher:latest
+test-results-analyzer:latest
+performance:latest
+
+# Notifications
+slack:latest
+email-ext:latest
+mailer:latest
+build-user-vars-plugin:latest
+
+# Deployment and environments
+deploy:latest
+environment-script:latest
+parameterized-trigger:latest
+conditional-buildstep:latest
+copyartifact:latest
+
+# Monitoring and metrics
+prometheus:latest
+monitoring:latest
+build-monitor-plugin:latest
+dashboard-view:latest
+
+# Utilities
+build-name-setter:latest
+description-setter:latest
+envinject:latest
+jobConfigHistory:latest
+rebuild:latest
+ssh-agent:latest
+ssh-slaves:latest
+matrix-project:latest
+matrix-auth:latest
+role-strategy:latest
+
+# Configuration as Code
+configuration-as-code:latest
+configuration-as-code-support:latest
+
+# Pipeline utilities
+pipeline-utility-steps:latest
+pipeline-input-step:latest
+pipeline-milestone-step:latest
+pipeline-build-step:latest
+pipeline-rest-api:latest
+
+# Artifact management
+artifactory:latest
+nexus-artifact-uploader:latest
+
+# Cloud providers
+amazon-ecr:latest
+amazon-ecs:latest
+google-kubernetes-engine:latest
+azure-container-agents:latest

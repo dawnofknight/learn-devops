@@ -1,0 +1,117 @@
+@Library('jenkins-shared-library') _
+
+/**
+ * Simple Application CI/CD Pipeline
+ * 
+ * This is a minimal example showing how to use the Jenkins shared library
+ * for a simple application with basic CI/CD requirements.
+ */
+
+pipeline([
+    config: [
+        // Basic Configuration
+        appName: 'simple-app',
+        dockerRegistry: 'ghcr.io/myorg',
+        
+        // Simplified Notifications
+        notifications: [
+            slack: [
+                enabled: true,
+                channel: '#ci-cd',
+                onFailure: true
+            ]
+        ],
+        
+        // Basic Security
+        security: [
+            enableTrivyScan: true,
+            failOnCritical: false // Don't fail on critical for simple apps
+        ],
+        
+        // Simple Deployment
+        deployment: [
+            strategy: 'rolling',
+            environments: ['staging'],
+            autoPromote: true // Auto-deploy to staging
+        ],
+        
+        // Basic Testing
+        testing: [
+            unit: true,
+            integration: false,
+            e2e: false,
+            coverage: false
+        ]
+    ],
+    
+    // Minimal Stages
+    stages: ['checkout', 'test', 'build', 'deploy']
+])
+
+/*
+ * Alternative: Even Simpler Custom Pipeline
+ * 
+ * For very basic needs, you can use individual functions:
+ */
+
+/*
+pipeline {
+    agent any
+    
+    environment {
+        APP_NAME = 'simple-app'
+        DOCKER_REGISTRY = 'ghcr.io/myorg'
+    }
+    
+    stages {
+        stage('🧪 Test') {
+            steps {
+                script {
+                    runTests([
+                        type: 'unit',
+                        timeout: 10
+                    ])
+                }
+            }
+        }
+        
+        stage('🏗️ Build & Push') {
+            steps {
+                script {
+                    buildAndPushImage([
+                        imageName: env.APP_NAME,
+                        registry: env.DOCKER_REGISTRY,
+                        tags: [env.BUILD_NUMBER, 'latest']
+                    ])
+                }
+            }
+        }
+        
+        stage('🚀 Deploy') {
+            steps {
+                script {
+                    deployToKubernetes([
+                        appName: env.APP_NAME,
+                        namespace: "${env.APP_NAME}-staging",
+                        imageTag: env.BUILD_NUMBER,
+                        registry: env.DOCKER_REGISTRY
+                    ])
+                }
+            }
+        }
+    }
+    
+    post {
+        failure {
+            script {
+                notifySlack.failure('#ci-cd', "Simple App deployment failed!")
+            }
+        }
+        success {
+            script {
+                notifySlack.success('#ci-cd', "Simple App deployed successfully!")
+            }
+        }
+    }
+}
+*/

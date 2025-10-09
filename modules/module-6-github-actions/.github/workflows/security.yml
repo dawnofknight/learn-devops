@@ -1,0 +1,347 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security scans every Monday at 2 AM UTC
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run dependency review (PR only)
+      uses: actions/dependency-review-action@v4
+      if: github.event_name == 'pull_request'
+      with:
+        fail-on-severity: high
+        allow-licenses: MIT, Apache-2.0, BSD-3-Clause, ISC
+        
+    - name: Run npm audit
+      run: |
+        npm audit --audit-level=moderate --json > npm-audit.json || true
+        npm audit --audit-level=moderate
+        
+    - name: Upload npm audit results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: npm-audit-results
+        path: npm-audit.json
+        retention-days: 30
+        
+    - name: Run Snyk security scan
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high --json-file-output=snyk-results.json
+      continue-on-error: true
+      
+    - name: Upload Snyk results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: snyk-results
+        path: snyk-results.json
+        retention-days: 30
+
+  code-analysis:
+    name: Static Code Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: javascript
+        queries: security-extended,security-and-quality
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Build application
+      run: npm run build
+      
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:javascript"
+        
+    - name: Run ESLint security rules
+      run: |
+        npm install --save-dev eslint-plugin-security
+        npx eslint . --ext .js,.jsx,.ts,.tsx --format json --output-file eslint-security.json || true
+        
+    - name: Upload ESLint results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: eslint-security-results
+        path: eslint-security.json
+        retention-days: 30
+
+  docker-security:
+    name: Docker Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.changed_files, 'Dockerfile')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Build Docker image for scanning
+      run: |
+        docker build -t security-scan-image:latest .
+        
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'security-scan-image:latest'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+        
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+        
+    - name: Run Trivy filesystem scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'json'
+        output: 'trivy-fs-results.json'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+        
+    - name: Upload Trivy filesystem results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: trivy-filesystem-results
+        path: trivy-fs-results.json
+        retention-days: 30
+        
+    - name: Run Docker Bench Security
+      run: |
+        docker run --rm --net host --pid host --userns host --cap-add audit_control \
+          -e DOCKER_CONTENT_TRUST=$DOCKER_CONTENT_TRUST \
+          -v /etc:/etc:ro \
+          -v /usr/bin/containerd:/usr/bin/containerd:ro \
+          -v /usr/bin/runc:/usr/bin/runc:ro \
+          -v /usr/lib/systemd:/usr/lib/systemd:ro \
+          -v /var/lib:/var/lib:ro \
+          -v /var/run/docker.sock:/var/run/docker.sock:ro \
+          --label docker_bench_security \
+          docker/docker-bench-security > docker-bench-results.txt || true
+          
+    - name: Upload Docker Bench results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: docker-bench-results
+        path: docker-bench-results.txt
+        retention-days: 30
+
+  secrets-scan:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history for secret scanning
+        
+    - name: Run TruffleHog OSS
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+        extra_args: --debug --only-verified
+        
+    - name: Run GitLeaks
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        
+    - name: Upload GitLeaks results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: gitleaks-results
+        path: results.sarif
+        retention-days: 30
+
+  infrastructure-scan:
+    name: Infrastructure Security Scan
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[infra]') || github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Checkov
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: .
+        framework: dockerfile,kubernetes,terraform
+        output_format: sarif
+        output_file_path: checkov-results.sarif
+        
+    - name: Upload Checkov results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: checkov-results.sarif
+        
+    - name: Run Terrascan
+      uses: tenable/terrascan-action@main
+      if: hashFiles('**/*.tf') != ''
+      with:
+        iac_type: 'terraform'
+        iac_version: 'v14'
+        policy_type: 'aws'
+        only_warn: true
+        sarif_upload: true
+        
+    - name: Run kube-score (if Kubernetes manifests exist)
+      if: hashFiles('**/*.yaml', '**/*.yml') != ''
+      run: |
+        wget https://github.com/zegl/kube-score/releases/download/v1.16.1/kube-score_1.16.1_linux_amd64.tar.gz
+        tar -xzf kube-score_1.16.1_linux_amd64.tar.gz
+        ./kube-score score **/*.yaml > kube-score-results.txt || true
+        
+    - name: Upload kube-score results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: kube-score-results
+        path: kube-score-results.txt
+        retention-days: 30
+
+  security-report:
+    name: Generate Security Report
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, code-analysis, docker-security, secrets-scan]
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Generate security summary
+      run: |
+        echo "# Security Scan Summary" > security-summary.md
+        echo "Generated on: $(date)" >> security-summary.md
+        echo "" >> security-summary.md
+        
+        echo "## Scan Results" >> security-summary.md
+        echo "- ✅ Dependency Scan: ${{ needs.dependency-scan.result }}" >> security-summary.md
+        echo "- ✅ Code Analysis: ${{ needs.code-analysis.result }}" >> security-summary.md
+        echo "- ✅ Docker Security: ${{ needs.docker-security.result }}" >> security-summary.md
+        echo "- ✅ Secrets Scan: ${{ needs.secrets-scan.result }}" >> security-summary.md
+        echo "" >> security-summary.md
+        
+        echo "## Artifacts Generated" >> security-summary.md
+        echo "The following security scan results are available as artifacts:" >> security-summary.md
+        echo "- npm-audit-results" >> security-summary.md
+        echo "- snyk-results" >> security-summary.md
+        echo "- eslint-security-results" >> security-summary.md
+        echo "- trivy-filesystem-results" >> security-summary.md
+        echo "- docker-bench-results" >> security-summary.md
+        echo "- gitleaks-results" >> security-summary.md
+        
+    - name: Upload security summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-summary
+        path: security-summary.md
+        retention-days: 90
+        
+    - name: Comment security summary on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const summary = fs.readFileSync('security-summary.md', 'utf8');
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });
+          
+    - name: Notify security team on critical findings
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: "🚨 Critical security vulnerabilities found in ${{ github.repository }}"
+        webhook_url: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
+        
+    - name: Create security issue on critical findings
+      if: failure() && github.event_name == 'schedule'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: '🚨 Critical Security Vulnerabilities Detected',
+            body: `Critical security vulnerabilities have been detected in the scheduled security scan.
+            
+            Please review the security scan results and take immediate action to address any critical or high-severity issues.
+            
+            Scan Date: ${new Date().toISOString()}
+            Workflow Run: ${context.runId}`,
+            labels: ['security', 'critical', 'automated']
+          });

@@ -1,0 +1,369 @@
+@Library('jenkins-shared-library') _
+
+/**
+ * Quote Application CI/CD Pipeline
+ * 
+ * This pipeline demonstrates a complete CI/CD workflow for the Quote application
+ * using the Jenkins shared library for standardized operations.
+ */
+
+pipeline([
+    config: [
+        // Application Configuration
+        appName: 'quote-app',
+        dockerRegistry: 'ghcr.io/learn-container',
+        kubernetesNamespace: 'quote-app',
+        
+        // Build Configuration
+        buildTimeout: 45,
+        testTimeout: 20,
+        deployTimeout: 10,
+        retryCount: 2,
+        parallelJobs: 4,
+        
+        // Notification Configuration
+        notifications: [
+            slack: [
+                enabled: true,
+                channel: '#deployments',
+                onSuccess: true,
+                onFailure: true,
+                onDeployment: true
+            ],
+            email: [
+                enabled: true,
+                recipients: 'devops-team@company.com,quote-app-team@company.com',
+                onFailure: true,
+                onSuccess: false // Only notify on failures for email
+            ]
+        ],
+        
+        // Security Configuration
+        security: [
+            enableSonarQube: true,
+            enableTrivyScan: true,
+            enableOWASPScan: true,
+            failOnCritical: true,
+            sonarQualityGate: true
+        ],
+        
+        // Deployment Configuration
+        deployment: [
+            strategy: 'blue-green', // Use blue-green for production
+            environments: ['staging', 'production'],
+            autoPromote: false, // Require manual approval for production
+            healthCheckTimeout: 300,
+            rollbackOnFailure: true
+        ],
+        
+        // Testing Configuration
+        testing: [
+            unit: true,
+            integration: true,
+            e2e: true,
+            performance: false, // Disable for this example
+            security: true,
+            coverage: true,
+            coverageThreshold: 75
+        ]
+    ],
+    
+    // Pipeline Stages
+    stages: [
+        'checkout',
+        'test',
+        'quality',
+        'security',
+        'build',
+        'deploy'
+    ]
+])
+
+// Additional custom stages can be added here if needed
+// This demonstrates how to extend the standard pipeline
+
+/*
+ * Alternative: Custom Pipeline Implementation
+ * 
+ * If you need more control, you can use individual functions:
+ */
+
+/*
+pipeline {
+    agent any
+    
+    environment {
+        APP_NAME = 'quote-app'
+        DOCKER_REGISTRY = 'ghcr.io/learn-container'
+        BUILD_VERSION = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
+    }
+    
+    stages {
+        stage('🚀 Setup') {
+            steps {
+                script {
+                    echo "Starting Quote App CI/CD Pipeline"
+                    echo "Version: ${env.BUILD_VERSION}"
+                    echo "Branch: ${env.BRANCH_NAME}"
+                }
+            }
+        }
+        
+        stage('🧪 Tests') {
+            parallel {
+                stage('Backend Tests') {
+                    steps {
+                        script {
+                            runTests([
+                                type: 'unit',
+                                path: 'backend',
+                                timeout: 15,
+                                publishResults: true,
+                                generateCoverage: true
+                            ])
+                        }
+                    }
+                }
+                
+                stage('Frontend Tests') {
+                    steps {
+                        script {
+                            runTests([
+                                type: 'unit',
+                                path: 'frontend',
+                                timeout: 15,
+                                publishResults: true,
+                                generateCoverage: true
+                            ])
+                        }
+                    }
+                }
+                
+                stage('API Tests') {
+                    steps {
+                        script {
+                            runTests([
+                                type: 'integration',
+                                timeout: 10,
+                                publishResults: true
+                            ])
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('🏗️ Build Images') {
+            parallel {
+                stage('Backend Image') {
+                    steps {
+                        script {
+                            buildAndPushImage([
+                                imageName: "${env.APP_NAME}-backend",
+                                dockerFile: 'backend/Dockerfile',
+                                context: 'backend',
+                                registry: env.DOCKER_REGISTRY,
+                                tags: [env.BUILD_VERSION, 'latest'],
+                                enableScan: true,
+                                buildArgs: [
+                                    'NODE_ENV': 'production',
+                                    'BUILD_VERSION': env.BUILD_VERSION
+                                ]
+                            ])
+                        }
+                    }
+                }
+                
+                stage('Frontend Image') {
+                    steps {
+                        script {
+                            buildAndPushImage([
+                                imageName: "${env.APP_NAME}-frontend",
+                                dockerFile: 'frontend/Dockerfile',
+                                context: 'frontend',
+                                registry: env.DOCKER_REGISTRY,
+                                tags: [env.BUILD_VERSION, 'latest'],
+                                enableScan: true,
+                                buildArgs: [
+                                    'REACT_APP_API_URL': 'https://api.quote-app.com',
+                                    'REACT_APP_VERSION': env.BUILD_VERSION
+                                ]
+                            ])
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('🚀 Deploy to Staging') {
+            steps {
+                script {
+                    deployToKubernetes([
+                        appName: env.APP_NAME,
+                        namespace: "${env.APP_NAME}-staging",
+                        imageTag: env.BUILD_VERSION,
+                        registry: env.DOCKER_REGISTRY,
+                        strategy: 'rolling',
+                        timeout: 300,
+                        values: [
+                            'backend.replicas': 2,
+                            'frontend.replicas': 2,
+                            'backend.resources.requests.cpu': '100m',
+                            'backend.resources.requests.memory': '256Mi',
+                            'frontend.resources.requests.cpu': '50m',
+                            'frontend.resources.requests.memory': '128Mi'
+                        ]
+                    ])
+                    
+                    // Run smoke tests
+                    runTests([
+                        type: 'smoke',
+                        environment: 'staging',
+                        timeout: 5
+                    ])
+                }
+            }
+        }
+        
+        stage('🎯 Production Approval') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    branch 'release/*'
+                }
+            }
+            steps {
+                script {
+                    notifySlack([
+                        channel: '#deployments',
+                        message: "🚀 Quote App v${env.BUILD_VERSION} is ready for production deployment!",
+                        status: 'warning',
+                        mentionChannel: true
+                    ])
+                    
+                    timeout(time: 24, unit: 'HOURS') {
+                        input(
+                            message: 'Deploy Quote App to Production?',
+                            ok: 'Deploy to Production',
+                            submitterParameter: 'APPROVER',
+                            parameters: [
+                                choice(
+                                    name: 'DEPLOYMENT_STRATEGY',
+                                    choices: ['blue-green', 'rolling', 'canary'],
+                                    description: 'Choose deployment strategy'
+                                ),
+                                booleanParam(
+                                    name: 'SKIP_SMOKE_TESTS',
+                                    defaultValue: false,
+                                    description: 'Skip post-deployment smoke tests'
+                                )
+                            ]
+                        )
+                    }
+                }
+            }
+        }
+        
+        stage('🚀 Deploy to Production') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    branch 'release/*'
+                }
+                expression { env.APPROVER != null }
+            }
+            steps {
+                script {
+                    deployToKubernetes([
+                        appName: env.APP_NAME,
+                        namespace: "${env.APP_NAME}-prod",
+                        imageTag: env.BUILD_VERSION,
+                        registry: env.DOCKER_REGISTRY,
+                        strategy: env.DEPLOYMENT_STRATEGY ?: 'blue-green',
+                        timeout: 600,
+                        enableRollback: true,
+                        values: [
+                            'backend.replicas': 5,
+                            'frontend.replicas': 3,
+                            'backend.resources.requests.cpu': '200m',
+                            'backend.resources.requests.memory': '512Mi',
+                            'backend.resources.limits.cpu': '500m',
+                            'backend.resources.limits.memory': '1Gi',
+                            'frontend.resources.requests.cpu': '100m',
+                            'frontend.resources.requests.memory': '256Mi',
+                            'frontend.resources.limits.cpu': '200m',
+                            'frontend.resources.limits.memory': '512Mi',
+                            'ingress.enabled': true,
+                            'ingress.host': 'quote-app.com'
+                        ]
+                    ])
+                    
+                    // Run production smoke tests
+                    if (!env.SKIP_SMOKE_TESTS?.toBoolean()) {
+                        runTests([
+                            type: 'smoke',
+                            environment: 'production',
+                            timeout: 10
+                        ])
+                    }
+                    
+                    // Send success notification
+                    notifySlack([
+                        channel: '#deployments',
+                        message: "🎉 Quote App v${env.BUILD_VERSION} successfully deployed to production!",
+                        status: 'success',
+                        mentionChannel: false
+                    ])
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Archive test reports and artifacts
+                publishTestResults testResultsPattern: 'reports/test/**/*.xml'
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'reports/coverage',
+                    reportFiles: 'index.html',
+                    reportName: 'Coverage Report'
+                ])
+                
+                archiveArtifacts(
+                    artifacts: 'reports/**/*,build-metadata.json',
+                    allowEmptyArchive: true
+                )
+            }
+        }
+        
+        success {
+            script {
+                echo "✅ Quote App pipeline completed successfully!"
+            }
+        }
+        
+        failure {
+            script {
+                echo "❌ Quote App pipeline failed!"
+                
+                notifySlack([
+                    channel: '#deployments',
+                    message: "💥 Quote App v${env.BUILD_VERSION} pipeline failed!",
+                    status: 'failure',
+                    mentionChannel: true
+                ])
+            }
+        }
+        
+        cleanup {
+            cleanWs()
+        }
+    }
+}
+*/

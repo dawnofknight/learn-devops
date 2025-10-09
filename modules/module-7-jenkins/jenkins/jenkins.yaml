@@ -1,0 +1,234 @@
+jenkins:
+  systemMessage: "Jenkins configured automatically by Jenkins Configuration as Code plugin\n\n"
+  
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: "DOCKER_REGISTRY"
+            value: "ghcr.io"
+          - key: "KUBECONFIG"
+            value: "/var/jenkins_home/.kube/config"
+  
+  numExecutors: 2
+  
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD:-admin123}"
+          properties:
+            - "hudson.tasks.Mailer$UserProperty":
+                emailAddress: "admin@example.com"
+            - "hudson.model.PaneStatusProperties":
+                collapsed: false
+
+  authorizationStrategy:
+    roleBased:
+      roles:
+        global:
+          - name: "admin"
+            description: "Jenkins administrators"
+            permissions:
+              - "Overall/Administer"
+            assignments:
+              - "admin"
+          - name: "developer"
+            description: "Jenkins developers"
+            permissions:
+              - "Overall/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "View/Read"
+            assignments:
+              - "authenticated"
+
+  clouds:
+    - kubernetes:
+        name: "kubernetes"
+        serverUrl: "https://kubernetes.default.svc.cluster.local"
+        namespace: "jenkins"
+        jenkinsUrl: "http://jenkins:8080"
+        jenkinsTunnel: "jenkins:50000"
+        connectTimeout: 5
+        readTimeout: 15
+        containerCapStr: 10
+        maxRequestsPerHostStr: 32
+        retentionTimeout: 5
+        templates:
+          - name: "docker-agent"
+            namespace: "jenkins"
+            label: "docker"
+            nodeUsageMode: NORMAL
+            containers:
+              - name: "docker"
+                image: "docker:dind"
+                privileged: true
+                alwaysPullImage: true
+                workingDir: "/home/jenkins/agent"
+                command: ""
+                args: ""
+                ttyEnabled: true
+                resourceRequestCpu: "100m"
+                resourceRequestMemory: "256Mi"
+                resourceLimitCpu: "500m"
+                resourceLimitMemory: "512Mi"
+                envVars:
+                  - envVar:
+                      key: "DOCKER_TLS_CERTDIR"
+                      value: ""
+            volumes:
+              - emptyDirVolume:
+                  mountPath: "/var/lib/docker"
+                  memory: false
+            yaml: |
+              spec:
+                securityContext:
+                  runAsUser: 0
+                  runAsGroup: 0
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "docker-registry-credentials"
+              username: "${DOCKER_REGISTRY_USERNAME:-admin}"
+              password: "${DOCKER_REGISTRY_PASSWORD:-password}"
+              description: "Docker Registry Credentials"
+          - string:
+              scope: GLOBAL
+              id: "slack-token"
+              secret: "${SLACK_TOKEN:-xoxb-your-slack-token}"
+              description: "Slack Bot Token"
+          - file:
+              scope: GLOBAL
+              id: "kubeconfig"
+              fileName: "config"
+              secretBytes: "${KUBECONFIG_CONTENT:-}"
+              description: "Kubernetes Config File"
+          - string:
+              scope: GLOBAL
+              id: "sonarqube-token"
+              secret: "${SONARQUBE_TOKEN:-your-sonarqube-token}"
+              description: "SonarQube Authentication Token"
+
+tool:
+  git:
+    installations:
+      - name: "Default"
+        home: "git"
+  
+  dockerTool:
+    installations:
+      - name: "docker"
+        home: "/usr/bin/docker"
+  
+  kubernetes:
+    installations:
+      - name: "kubectl"
+        home: "/usr/local/bin/kubectl"
+
+unclassified:
+  location:
+    url: "http://localhost:8080/"
+    adminAddress: "admin@example.com"
+  
+  slackNotifier:
+    baseUrl: "https://hooks.slack.com/services/"
+    teamDomain: "${SLACK_TEAM_DOMAIN:-your-team}"
+    token: "${SLACK_TOKEN:-xoxb-your-slack-token}"
+    room: "#jenkins"
+    sendAs: "Jenkins"
+  
+  sonarGlobalConfiguration:
+    installations:
+      - name: "SonarQube"
+        serverUrl: "${SONARQUBE_URL:-http://sonarqube:9000}"
+        credentialsId: "sonarqube-token"
+  
+  globalLibraries:
+    libraries:
+      - name: "shared-library"
+        defaultVersion: "main"
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "${SHARED_LIBRARY_REPO:-https://github.com/your-org/jenkins-shared-library.git}"
+                credentialsId: "github-credentials"
+
+jobs:
+  - script: |
+      multibranchPipelineJob('quote-app-multibranch') {
+        displayName('Quote App - Multi-branch Pipeline')
+        description('Multi-branch pipeline for Quote application')
+        
+        branchSources {
+          github {
+            id('quote-app-github')
+            scanCredentialsId('github-credentials')
+            repoOwner('your-org')
+            repository('quote-app')
+            buildOriginBranch(true)
+            buildOriginBranchWithPR(false)
+            buildOriginPRMerge(true)
+            buildOriginPRHead(false)
+            buildForkPRMerge(false)
+            buildForkPRHead(false)
+          }
+        }
+        
+        factory {
+          workflowBranchProjectFactory {
+            scriptPath('Jenkinsfile')
+          }
+        }
+        
+        orphanedItemStrategy {
+          discardOldItems {
+            daysToKeep(7)
+            numToKeep(10)
+          }
+        }
+        
+        triggers {
+          periodicFolderTrigger {
+            interval('1h')
+          }
+        }
+      }
+
+  - script: |
+      pipelineJob('quote-app-deploy') {
+        displayName('Quote App - Production Deploy')
+        description('Production deployment pipeline for Quote application')
+        
+        parameters {
+          stringParam('IMAGE_TAG', 'latest', 'Docker image tag to deploy')
+          choiceParam('ENVIRONMENT', ['staging', 'production'], 'Target environment')
+          booleanParam('SKIP_TESTS', false, 'Skip pre-deployment tests')
+        }
+        
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/your-org/quote-app.git')
+                  credentials('github-credentials')
+                }
+                branch('main')
+              }
+            }
+            scriptPath('Jenkinsfile.deploy')
+          }
+        }
+        
+        triggers {
+          upstream('quote-app-multibranch/main', 'SUCCESS')
+        }
+      }

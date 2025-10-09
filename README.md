@@ -79,6 +79,30 @@ We'll build a full-stack "Quote of the Day" application consisting of:
 - Application, infrastructure, and business metrics
 - Performance monitoring and alerting rules
 
+### Module 6: CI/CD with GitHub Actions
+**Duration**: 2-3 hours  
+**Objective**: Implement automated CI/CD pipelines for continuous delivery
+
+- GitHub Actions workflow fundamentals
+- Automated testing and code quality checks
+- Docker image building and registry management
+- Multi-environment deployment strategies
+- Security scanning and vulnerability assessment
+- Automated rollback and deployment validation
+
+### Module 7: Advanced CI/CD with Jenkins ✅
+**Duration**: 3-4 hours  
+**Objective**: Set up enterprise-grade CI/CD with Jenkins
+
+- Jenkins installation and configuration with Docker
+- Pipeline as Code with Jenkinsfile and shared libraries
+- Multi-branch and multi-environment pipelines
+- Integration with Kubernetes for dynamic agents
+- Advanced deployment patterns (Blue-Green, Canary)
+- Security integration (SonarQube, Trivy, OWASP)
+- Pipeline monitoring and optimization
+- Complete Jenkins ecosystem (SonarQube, Nexus, Docker Registry)
+
 ## 🚀 Quick Start
 
 ### For Learners
@@ -146,7 +170,9 @@ learn-container/
 │   ├── module-2-kubernetes-intro/    # Kubernetes deployment
 │   ├── module-3-cloud-deployment/    # Cloud provider deployment
 │   ├── module-4-performance-testing/ # Load testing with k6
-│   └── module-5-monitoring/          # Monitoring stack (Prometheus/Grafana)
+│   ├── module-5-monitoring/          # Monitoring stack (Prometheus/Grafana)
+│   ├── module-6-github-actions/      # CI/CD with GitHub Actions
+│   └── module-7-jenkins/             # Advanced CI/CD with Jenkins
 └── resources/                        # Additional resources
     ├── cheatsheets/
     └── troubleshooting/
@@ -162,6 +188,8 @@ This learning path is **COMPLETE** and production-ready! All modules have been i
 - ✅ **Cloud Deployment**: Multi-cloud support (AWS, GCP, Azure)
 - ✅ **Performance Testing**: Comprehensive k6 load testing suite
 - ✅ **Monitoring & Observability**: Complete Prometheus/Grafana/AlertManager stack
+- ✅ **CI/CD with GitHub Actions**: Automated pipelines for continuous delivery
+- ✅ **Advanced CI/CD with Jenkins**: Enterprise-grade pipeline management
 
 ### Key Features Implemented
 
@@ -177,7 +205,8 @@ This learning path is **COMPLETE** and production-ready! All modules have been i
 - Docker Compose for development and production
 - Kubernetes manifests with best practices
 - Cloud-specific deployment configurations
-- CI/CD pipelines for automated deployment
+- GitHub Actions CI/CD pipelines with security scanning
+- Jenkins enterprise pipeline management with shared libraries
 
 **Monitoring & Observability:**
 - Prometheus metrics collection

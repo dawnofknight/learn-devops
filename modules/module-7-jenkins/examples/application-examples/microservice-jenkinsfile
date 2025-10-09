@@ -1,0 +1,283 @@
+@Library('jenkins-shared-library') _
+
+/**
+ * Microservice CI/CD Pipeline
+ * 
+ * This example demonstrates a comprehensive pipeline for microservice applications
+ * with advanced features like service mesh integration, contract testing, and
+ * multi-environment deployments.
+ */
+
+pipeline([
+    config: [
+        // Application Configuration
+        appName: 'user-service',
+        dockerRegistry: 'ghcr.io/myorg',
+        kubernetesNamespace: 'microservices',
+        
+        // Build Configuration
+        build: [
+            parallel: true,
+            timeout: 30,
+            retries: 2,
+            dockerBuildArgs: [
+                'SERVICE_VERSION': '${BUILD_NUMBER}',
+                'BUILD_DATE': '${BUILD_TIMESTAMP}',
+                'GIT_COMMIT': '${GIT_COMMIT}'
+            ]
+        ],
+        
+        // Comprehensive Testing
+        testing: [
+            unit: [
+                enabled: true,
+                timeout: 15,
+                coverage: true,
+                threshold: 80
+            ],
+            integration: [
+                enabled: true,
+                timeout: 20,
+                services: ['postgres', 'redis'],
+                testContainers: true
+            ],
+            contract: [
+                enabled: true,
+                provider: 'user-service',
+                consumers: ['order-service', 'notification-service'],
+                pactBroker: 'https://pact-broker.company.com'
+            ],
+            e2e: [
+                enabled: true,
+                timeout: 30,
+                browser: 'chrome',
+                parallel: 2
+            ],
+            performance: [
+                enabled: true,
+                tool: 'k6',
+                duration: '5m',
+                vus: 50,
+                thresholds: [
+                    'http_req_duration{p(95)}<500',
+                    'http_req_failed<0.1'
+                ]
+            ],
+            security: [
+                enabled: true,
+                tools: ['zap', 'semgrep'],
+                timeout: 20
+            ]
+        ],
+        
+        // Advanced Security
+        security: [
+            enableSonarQube: true,
+            sonarQuality: [
+                gate: true,
+                coverage: 80,
+                duplicatedLines: 3,
+                maintainabilityRating: 'A',
+                reliabilityRating: 'A',
+                securityRating: 'A'
+            ],
+            enableTrivyScan: true,
+            trivyConfig: [
+                severity: 'HIGH,CRITICAL',
+                ignoreUnfixed: false,
+                timeout: '10m'
+            ],
+            enableOWASP: true,
+            owaspConfig: [
+                failOnCVSS: 7,
+                suppressionFile: 'owasp-suppressions.xml'
+            ],
+            enableCosignSigning: true,
+            enableSBOM: true
+        ],
+        
+        // Multi-Environment Deployment
+        deployment: [
+            environments: [
+                staging: [
+                    strategy: 'rolling',
+                    replicas: 2,
+                    autoPromote: true,
+                    healthCheck: [
+                        path: '/health',
+                        timeout: 300
+                    ],
+                    postDeploy: [
+                        smokeTests: true,
+                        contractVerification: true
+                    ]
+                ],
+                'pre-prod': [
+                    strategy: 'blue-green',
+                    replicas: 3,
+                    approval: [
+                        required: true,
+                        approvers: ['team-lead', 'devops-team'],
+                        timeout: '24h'
+                    ],
+                    postDeploy: [
+                        smokeTests: true,
+                        performanceTests: true,
+                        securityTests: true
+                    ]
+                ],
+                production: [
+                    strategy: 'canary',
+                    canaryConfig: [
+                        steps: [10, 25, 50, 100],
+                        interval: '5m',
+                        metrics: [
+                            'success-rate',
+                            'latency-p99',
+                            'error-rate'
+                        ]
+                    ],
+                    replicas: 5,
+                    approval: [
+                        required: true,
+                        approvers: ['team-lead', 'sre-team'],
+                        timeout: '48h'
+                    ],
+                    postDeploy: [
+                        smokeTests: true,
+                        monitoringSetup: true
+                    ]
+                ]
+            ],
+            serviceMesh: [
+                enabled: true,
+                type: 'istio',
+                virtualService: true,
+                destinationRule: true,
+                peerAuthentication: true
+            ]
+        ],
+        
+        // Comprehensive Notifications
+        notifications: [
+            slack: [
+                enabled: true,
+                channels: [
+                    success: '#deployments',
+                    failure: '#alerts',
+                    approval: '#approvals'
+                ],
+                mentions: [
+                    failure: ['@devops-team', '@on-call'],
+                    approval: ['@team-lead']
+                ]
+            ],
+            email: [
+                enabled: true,
+                recipients: [
+                    success: ['team@company.com'],
+                    failure: ['team@company.com', 'devops@company.com']
+                ]
+            ],
+            teams: [
+                enabled: true,
+                webhook: '${TEAMS_WEBHOOK_URL}'
+            ]
+        ],
+        
+        // Monitoring & Observability
+        monitoring: [
+            prometheus: [
+                enabled: true,
+                scrapeInterval: '30s',
+                customMetrics: true
+            ],
+            jaeger: [
+                enabled: true,
+                samplingRate: 0.1
+            ],
+            logging: [
+                enabled: true,
+                level: 'INFO',
+                structured: true
+            ]
+        ],
+        
+        // Compliance & Governance
+        compliance: [
+            enablePolicyCheck: true,
+            policies: ['security', 'resource-limits', 'naming'],
+            enableAuditLog: true,
+            enableCostTracking: true
+        ]
+    ],
+    
+    // All Pipeline Stages
+    stages: [
+        'checkout',
+        'test',
+        'quality',
+        'security',
+        'build',
+        'deploy'
+    ]
+])
+
+/*
+ * Custom Post-Pipeline Actions
+ */
+pipeline.onSuccess {
+    // Update service catalog
+    sh """
+        curl -X POST ${SERVICE_CATALOG_URL}/services/${config.appName}/deployments \\
+             -H 'Content-Type: application/json' \\
+             -d '{
+                 "version": "${BUILD_NUMBER}",
+                 "environment": "${DEPLOY_ENV}",
+                 "timestamp": "${BUILD_TIMESTAMP}",
+                 "commit": "${GIT_COMMIT}"
+             }'
+    """
+    
+    // Update dependency graph
+    script {
+        updateDependencyGraph([
+            service: config.appName,
+            version: BUILD_NUMBER,
+            dependencies: readJSON(file: 'dependencies.json')
+        ])
+    }
+}
+
+pipeline.onFailure {
+    // Create incident if production deployment fails
+    script {
+        if (env.DEPLOY_ENV == 'production') {
+            createIncident([
+                title: "Production deployment failed: ${config.appName}",
+                severity: 'high',
+                assignee: 'devops-team'
+            ])
+        }
+    }
+}
+
+/*
+ * Branch-Specific Configurations
+ */
+if (env.BRANCH_NAME.startsWith('feature/')) {
+    // Feature branch: minimal pipeline
+    pipeline.config.deployment.environments = ['staging']
+    pipeline.config.testing.performance.enabled = false
+    pipeline.config.testing.contract.enabled = false
+}
+
+if (env.BRANCH_NAME == 'develop') {
+    // Develop branch: full testing, deploy to staging and pre-prod
+    pipeline.config.deployment.environments = ['staging', 'pre-prod']
+}
+
+if (env.BRANCH_NAME == 'main') {
+    // Main branch: full pipeline with production deployment
+    pipeline.config.deployment.environments = ['staging', 'pre-prod', 'production']
+}

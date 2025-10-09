@@ -1,0 +1,261 @@
+name: Deploy Application
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types:
+      - completed
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      version:
+        description: 'Version to deploy (leave empty for latest)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: 
+      name: staging
+      url: https://staging.example.com
+    if: |
+      (github.event.workflow_run.conclusion == 'success' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    
+    outputs:
+      deployment-id: ${{ steps.deploy.outputs.deployment-id }}
+      image-tag: ${{ steps.prepare.outputs.image-tag }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Prepare deployment
+      id: prepare
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+          IMAGE_TAG="${{ github.event.inputs.version }}"
+        else
+          IMAGE_TAG="${{ github.sha }}"
+        fi
+        echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+        echo "Deploying image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+        
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+        
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region us-west-2 --name staging-cluster
+        
+    - name: Deploy to Kubernetes
+      id: deploy
+      run: |
+        # Update deployment with new image
+        kubectl set image deployment/quote-app-backend \
+          backend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.prepare.outputs.image-tag }} \
+          -n quote-app-staging
+          
+        kubectl set image deployment/quote-app-frontend \
+          frontend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ steps.prepare.outputs.image-tag }} \
+          -n quote-app-staging
+          
+        # Wait for rollout to complete
+        kubectl rollout status deployment/quote-app-backend -n quote-app-staging --timeout=300s
+        kubectl rollout status deployment/quote-app-frontend -n quote-app-staging --timeout=300s
+        
+        # Get deployment ID for tracking
+        DEPLOYMENT_ID=$(kubectl get deployment quote-app-backend -n quote-app-staging -o jsonpath='{.metadata.uid}')
+        echo "deployment-id=${DEPLOYMENT_ID}" >> $GITHUB_OUTPUT
+        
+    - name: Run health checks
+      run: |
+        echo "Running health checks..."
+        
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app=quote-app-backend -n quote-app-staging --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=quote-app-frontend -n quote-app-staging --timeout=300s
+        
+        # Get service endpoint
+        BACKEND_URL=$(kubectl get service quote-app-backend -n quote-app-staging -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        
+        # Health check
+        curl -f http://${BACKEND_URL}/health || exit 1
+        echo "Health checks passed!"
+        
+    - name: Run smoke tests
+      run: |
+        echo "Running smoke tests..."
+        # Add your smoke test commands here
+        npm run test:smoke -- --env=staging
+        
+    - name: Notify deployment success
+      uses: 8398a7/action-slack@v3
+      if: success()
+      with:
+        status: success
+        text: "✅ Staging deployment successful for ${{ steps.prepare.outputs.image-tag }}"
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        
+    - name: Notify deployment failure
+      uses: 8398a7/action-slack@v3
+      if: failure()
+      with:
+        status: failure
+        text: "❌ Staging deployment failed for ${{ steps.prepare.outputs.image-tag }}"
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: 
+      name: production
+      url: https://production.example.com
+    needs: deploy-staging
+    if: |
+      (success() && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Prepare production deployment
+      id: prepare
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+          IMAGE_TAG="${{ github.event.inputs.version }}"
+        else
+          IMAGE_TAG="${{ needs.deploy-staging.outputs.image-tag }}"
+        fi
+        echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+        echo "Deploying to production: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+        
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+        
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region us-west-2 --name production-cluster
+        
+    - name: Create deployment backup
+      run: |
+        echo "Creating backup of current deployment..."
+        kubectl get deployment quote-app-backend -n quote-app-production -o yaml > backup-backend.yaml
+        kubectl get deployment quote-app-frontend -n quote-app-production -o yaml > backup-frontend.yaml
+        
+    - name: Deploy to Production
+      id: deploy
+      run: |
+        echo "Deploying to production with rolling update strategy..."
+        
+        # Update deployment with new image
+        kubectl set image deployment/quote-app-backend \
+          backend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.prepare.outputs.image-tag }} \
+          -n quote-app-production
+          
+        kubectl set image deployment/quote-app-frontend \
+          frontend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ steps.prepare.outputs.image-tag }} \
+          -n quote-app-production
+          
+        # Wait for rollout to complete
+        kubectl rollout status deployment/quote-app-backend -n quote-app-production --timeout=600s
+        kubectl rollout status deployment/quote-app-frontend -n quote-app-production --timeout=600s
+        
+    - name: Run production health checks
+      run: |
+        echo "Running comprehensive production health checks..."
+        
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app=quote-app-backend -n quote-app-production --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=quote-app-frontend -n quote-app-production --timeout=300s
+        
+        # Get service endpoint
+        BACKEND_URL=$(kubectl get service quote-app-backend -n quote-app-production -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        
+        # Comprehensive health checks
+        curl -f http://${BACKEND_URL}/health || exit 1
+        curl -f http://${BACKEND_URL}/api/quotes/random || exit 1
+        
+        echo "Production health checks passed!"
+        
+    - name: Run production smoke tests
+      run: |
+        echo "Running production smoke tests..."
+        npm run test:smoke -- --env=production
+        
+    - name: Monitor deployment
+      run: |
+        echo "Monitoring deployment for 5 minutes..."
+        sleep 300
+        
+        # Check if deployment is still healthy
+        kubectl get pods -n quote-app-production -l app=quote-app-backend
+        kubectl get pods -n quote-app-production -l app=quote-app-frontend
+        
+        # Final health check
+        BACKEND_URL=$(kubectl get service quote-app-backend -n quote-app-production -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        curl -f http://${BACKEND_URL}/health || exit 1
+        
+    - name: Notify production deployment success
+      uses: 8398a7/action-slack@v3
+      if: success()
+      with:
+        status: success
+        text: "🚀 Production deployment successful for ${{ steps.prepare.outputs.image-tag }}"
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        
+    - name: Rollback on failure
+      if: failure()
+      run: |
+        echo "Deployment failed, initiating rollback..."
+        kubectl rollout undo deployment/quote-app-backend -n quote-app-production
+        kubectl rollout undo deployment/quote-app-frontend -n quote-app-production
+        
+        # Wait for rollback to complete
+        kubectl rollout status deployment/quote-app-backend -n quote-app-production --timeout=300s
+        kubectl rollout status deployment/quote-app-frontend -n quote-app-production --timeout=300s
+        
+    - name: Notify production deployment failure
+      uses: 8398a7/action-slack@v3
+      if: failure()
+      with:
+        status: failure
+        text: "🔥 Production deployment failed and rolled back for ${{ steps.prepare.outputs.image-tag }}"
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
