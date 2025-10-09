@@ -1,0 +1,408 @@
+# Custom PostgreSQL queries for enhanced monitoring
+
+# Database size metrics
+pg_database_size:
+  query: "SELECT datname as database, pg_database_size(datname) as size_bytes FROM pg_database WHERE datistemplate = false"
+  master: true
+  cache_seconds: 30
+  metrics:
+    - database:
+        usage: "LABEL"
+        description: "Database name"
+    - size_bytes:
+        usage: "GAUGE"
+        description: "Database size in bytes"
+
+# Table size metrics
+pg_table_size:
+  query: |
+    SELECT 
+      schemaname,
+      tablename,
+      pg_total_relation_size(schemaname||'.'||tablename) as size_bytes,
+      pg_relation_size(schemaname||'.'||tablename) as table_size_bytes,
+      pg_total_relation_size(schemaname||'.'||tablename) - pg_relation_size(schemaname||'.'||tablename) as index_size_bytes
+    FROM pg_tables 
+    WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
+  master: true
+  cache_seconds: 300
+  metrics:
+    - schemaname:
+        usage: "LABEL"
+        description: "Schema name"
+    - tablename:
+        usage: "LABEL"
+        description: "Table name"
+    - size_bytes:
+        usage: "GAUGE"
+        description: "Total table size including indexes in bytes"
+    - table_size_bytes:
+        usage: "GAUGE"
+        description: "Table size in bytes"
+    - index_size_bytes:
+        usage: "GAUGE"
+        description: "Index size in bytes"
+
+# Connection statistics
+pg_stat_database_connections:
+  query: |
+    SELECT 
+      datname as database,
+      numbackends as active_connections,
+      xact_commit as transactions_committed,
+      xact_rollback as transactions_rolled_back,
+      blks_read as blocks_read,
+      blks_hit as blocks_hit,
+      tup_returned as tuples_returned,
+      tup_fetched as tuples_fetched,
+      tup_inserted as tuples_inserted,
+      tup_updated as tuples_updated,
+      tup_deleted as tuples_deleted,
+      conflicts as conflicts,
+      temp_files as temp_files,
+      temp_bytes as temp_bytes,
+      deadlocks as deadlocks
+    FROM pg_stat_database 
+    WHERE datname IS NOT NULL
+  master: true
+  cache_seconds: 30
+  metrics:
+    - database:
+        usage: "LABEL"
+        description: "Database name"
+    - active_connections:
+        usage: "GAUGE"
+        description: "Number of active connections"
+    - transactions_committed:
+        usage: "COUNTER"
+        description: "Number of transactions committed"
+    - transactions_rolled_back:
+        usage: "COUNTER"
+        description: "Number of transactions rolled back"
+    - blocks_read:
+        usage: "COUNTER"
+        description: "Number of disk blocks read"
+    - blocks_hit:
+        usage: "COUNTER"
+        description: "Number of buffer hits"
+    - tuples_returned:
+        usage: "COUNTER"
+        description: "Number of tuples returned"
+    - tuples_fetched:
+        usage: "COUNTER"
+        description: "Number of tuples fetched"
+    - tuples_inserted:
+        usage: "COUNTER"
+        description: "Number of tuples inserted"
+    - tuples_updated:
+        usage: "COUNTER"
+        description: "Number of tuples updated"
+    - tuples_deleted:
+        usage: "COUNTER"
+        description: "Number of tuples deleted"
+    - conflicts:
+        usage: "COUNTER"
+        description: "Number of queries canceled due to conflicts"
+    - temp_files:
+        usage: "COUNTER"
+        description: "Number of temporary files created"
+    - temp_bytes:
+        usage: "COUNTER"
+        description: "Total amount of data written to temporary files"
+    - deadlocks:
+        usage: "COUNTER"
+        description: "Number of deadlocks detected"
+
+# Long running queries
+pg_long_running_queries:
+  query: |
+    SELECT 
+      datname as database,
+      usename as username,
+      application_name,
+      state,
+      EXTRACT(EPOCH FROM (now() - query_start)) as duration_seconds,
+      EXTRACT(EPOCH FROM (now() - state_change)) as state_duration_seconds,
+      query
+    FROM pg_stat_activity 
+    WHERE state != 'idle' 
+      AND query_start IS NOT NULL 
+      AND now() - query_start > interval '30 seconds'
+    ORDER BY query_start
+  master: true
+  cache_seconds: 30
+  metrics:
+    - database:
+        usage: "LABEL"
+        description: "Database name"
+    - username:
+        usage: "LABEL"
+        description: "Username"
+    - application_name:
+        usage: "LABEL"
+        description: "Application name"
+    - state:
+        usage: "LABEL"
+        description: "Query state"
+    - query:
+        usage: "LABEL"
+        description: "Query text (truncated)"
+    - duration_seconds:
+        usage: "GAUGE"
+        description: "Query duration in seconds"
+    - state_duration_seconds:
+        usage: "GAUGE"
+        description: "Time in current state in seconds"
+
+# Index usage statistics
+pg_stat_user_indexes:
+  query: |
+    SELECT 
+      schemaname,
+      tablename,
+      indexrelname as index_name,
+      idx_scan as index_scans,
+      idx_tup_read as index_tuples_read,
+      idx_tup_fetch as index_tuples_fetched
+    FROM pg_stat_user_indexes
+  master: true
+  cache_seconds: 300
+  metrics:
+    - schemaname:
+        usage: "LABEL"
+        description: "Schema name"
+    - tablename:
+        usage: "LABEL"
+        description: "Table name"
+    - index_name:
+        usage: "LABEL"
+        description: "Index name"
+    - index_scans:
+        usage: "COUNTER"
+        description: "Number of index scans initiated"
+    - index_tuples_read:
+        usage: "COUNTER"
+        description: "Number of index entries returned by scans"
+    - index_tuples_fetched:
+        usage: "COUNTER"
+        description: "Number of live table rows fetched by index scans"
+
+# Table statistics
+pg_stat_user_tables:
+  query: |
+    SELECT 
+      schemaname,
+      relname as tablename,
+      seq_scan as sequential_scans,
+      seq_tup_read as sequential_tuples_read,
+      idx_scan as index_scans,
+      idx_tup_fetch as index_tuples_fetched,
+      n_tup_ins as tuples_inserted,
+      n_tup_upd as tuples_updated,
+      n_tup_del as tuples_deleted,
+      n_tup_hot_upd as hot_updates,
+      n_live_tup as live_tuples,
+      n_dead_tup as dead_tuples,
+      n_mod_since_analyze as tuples_modified_since_analyze,
+      last_vacuum,
+      last_autovacuum,
+      last_analyze,
+      last_autoanalyze,
+      vacuum_count,
+      autovacuum_count,
+      analyze_count,
+      autoanalyze_count
+    FROM pg_stat_user_tables
+  master: true
+  cache_seconds: 60
+  metrics:
+    - schemaname:
+        usage: "LABEL"
+        description: "Schema name"
+    - tablename:
+        usage: "LABEL"
+        description: "Table name"
+    - sequential_scans:
+        usage: "COUNTER"
+        description: "Number of sequential scans initiated"
+    - sequential_tuples_read:
+        usage: "COUNTER"
+        description: "Number of live rows fetched by sequential scans"
+    - index_scans:
+        usage: "COUNTER"
+        description: "Number of index scans initiated"
+    - index_tuples_fetched:
+        usage: "COUNTER"
+        description: "Number of live rows fetched by index scans"
+    - tuples_inserted:
+        usage: "COUNTER"
+        description: "Number of rows inserted"
+    - tuples_updated:
+        usage: "COUNTER"
+        description: "Number of rows updated"
+    - tuples_deleted:
+        usage: "COUNTER"
+        description: "Number of rows deleted"
+    - hot_updates:
+        usage: "COUNTER"
+        description: "Number of rows HOT updated"
+    - live_tuples:
+        usage: "GAUGE"
+        description: "Estimated number of live rows"
+    - dead_tuples:
+        usage: "GAUGE"
+        description: "Estimated number of dead rows"
+    - tuples_modified_since_analyze:
+        usage: "GAUGE"
+        description: "Estimated number of rows modified since last analyze"
+    - vacuum_count:
+        usage: "COUNTER"
+        description: "Number of times this table has been manually vacuumed"
+    - autovacuum_count:
+        usage: "COUNTER"
+        description: "Number of times this table has been vacuumed by autovacuum"
+    - analyze_count:
+        usage: "COUNTER"
+        description: "Number of times this table has been manually analyzed"
+    - autoanalyze_count:
+        usage: "COUNTER"
+        description: "Number of times this table has been analyzed by autoanalyze"
+
+# Replication statistics (if applicable)
+pg_stat_replication:
+  query: |
+    SELECT 
+      application_name,
+      client_addr,
+      client_hostname,
+      client_port,
+      backend_start,
+      backend_xmin,
+      state,
+      sent_lsn,
+      write_lsn,
+      flush_lsn,
+      replay_lsn,
+      write_lag,
+      flush_lag,
+      replay_lag,
+      sync_priority,
+      sync_state
+    FROM pg_stat_replication
+  master: true
+  cache_seconds: 30
+  metrics:
+    - application_name:
+        usage: "LABEL"
+        description: "Application name"
+    - client_addr:
+        usage: "LABEL"
+        description: "Client IP address"
+    - client_hostname:
+        usage: "LABEL"
+        description: "Client hostname"
+    - state:
+        usage: "LABEL"
+        description: "Replication state"
+    - sync_state:
+        usage: "LABEL"
+        description: "Synchronization state"
+    - client_port:
+        usage: "GAUGE"
+        description: "Client port number"
+    - sync_priority:
+        usage: "GAUGE"
+        description: "Synchronization priority"
+
+# WAL statistics
+pg_stat_wal:
+  query: |
+    SELECT 
+      wal_records,
+      wal_fpi,
+      wal_bytes,
+      wal_buffers_full,
+      wal_write,
+      wal_sync,
+      wal_write_time,
+      wal_sync_time
+    FROM pg_stat_wal
+  master: true
+  cache_seconds: 30
+  metrics:
+    - wal_records:
+        usage: "COUNTER"
+        description: "Total number of WAL records generated"
+    - wal_fpi:
+        usage: "COUNTER"
+        description: "Total number of WAL full page images generated"
+    - wal_bytes:
+        usage: "COUNTER"
+        description: "Total amount of WAL generated in bytes"
+    - wal_buffers_full:
+        usage: "COUNTER"
+        description: "Number of times WAL data was written to disk because WAL buffers became full"
+    - wal_write:
+        usage: "COUNTER"
+        description: "Number of times WAL buffers were written out to disk"
+    - wal_sync:
+        usage: "COUNTER"
+        description: "Number of times WAL files were synced to disk"
+    - wal_write_time:
+        usage: "COUNTER"
+        description: "Total amount of time spent writing WAL buffers to disk"
+    - wal_sync_time:
+        usage: "COUNTER"
+        description: "Total amount of time spent syncing WAL files to disk"
+
+# Quote-specific application metrics
+pg_quotes_stats:
+  query: |
+    SELECT 
+      COUNT(*) as total_quotes,
+      COUNT(DISTINCT author) as unique_authors,
+      COUNT(DISTINCT category) as unique_categories,
+      AVG(LENGTH(quote_text)) as avg_quote_length,
+      MAX(LENGTH(quote_text)) as max_quote_length,
+      MIN(LENGTH(quote_text)) as min_quote_length
+    FROM quotes
+  master: true
+  cache_seconds: 300
+  metrics:
+    - total_quotes:
+        usage: "GAUGE"
+        description: "Total number of quotes in database"
+    - unique_authors:
+        usage: "GAUGE"
+        description: "Number of unique authors"
+    - unique_categories:
+        usage: "GAUGE"
+        description: "Number of unique categories"
+    - avg_quote_length:
+        usage: "GAUGE"
+        description: "Average quote length in characters"
+    - max_quote_length:
+        usage: "GAUGE"
+        description: "Maximum quote length in characters"
+    - min_quote_length:
+        usage: "GAUGE"
+        description: "Minimum quote length in characters"
+
+# Quote requests by category
+pg_quote_requests_by_category:
+  query: |
+    SELECT 
+      category,
+      COUNT(*) as request_count
+    FROM quote_requests 
+    WHERE created_at >= NOW() - INTERVAL '1 hour'
+    GROUP BY category
+  master: true
+  cache_seconds: 60
+  metrics:
+    - category:
+        usage: "LABEL"
+        description: "Quote category"
+    - request_count:
+        usage: "GAUGE"
+        description: "Number of requests in the last hour"

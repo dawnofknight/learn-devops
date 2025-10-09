@@ -1,0 +1,274 @@
+.App {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  flex: 1;
+}
+
+/* Header Styles */
+.app-header {
+  text-align: center;
+  margin-bottom: 40px;
+  color: white;
+}
+
+.app-header h1 {
+  font-size: 3rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.app-header p {
+  font-size: 1.2rem;
+  opacity: 0.9;
+  font-weight: 300;
+}
+
+/* Main Content */
+.main-content {
+  flex: 1;
+}
+
+/* Quote Section */
+.quote-section {
+  margin-bottom: 40px;
+}
+
+.quote-card {
+  text-align: center;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 40px;
+}
+
+.loading-container p {
+  color: #666;
+  font-style: italic;
+}
+
+.quote-content {
+  margin-bottom: 30px;
+}
+
+.quote-text {
+  font-size: 1.8rem;
+  line-height: 1.6;
+  font-style: italic;
+  color: #2c3e50;
+  margin-bottom: 20px;
+  font-weight: 300;
+}
+
+.quote-author {
+  display: block;
+  font-size: 1.2rem;
+  color: #7f8c8d;
+  font-weight: 600;
+  margin-bottom: 15px;
+}
+
+.quote-category {
+  display: inline-block;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.quote-actions {
+  display: flex;
+  gap: 15px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.btn-secondary {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.btn-outline {
+  background: transparent;
+  color: #667eea;
+  border: 2px solid #667eea;
+  box-shadow: none;
+}
+
+.btn-outline:hover {
+  background: #667eea;
+  color: white;
+}
+
+/* All Quotes Section */
+.all-quotes-section {
+  margin-top: 40px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30px;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
+.section-header h2 {
+  color: #2c3e50;
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.quotes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.quote-item {
+  background: rgba(255, 255, 255, 0.7);
+  padding: 25px;
+  border-radius: 15px;
+  border-left: 4px solid #667eea;
+  transition: all 0.3s ease;
+}
+
+.quote-item:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.quote-text-small {
+  font-size: 1.1rem;
+  line-height: 1.5;
+  color: #2c3e50;
+  margin-bottom: 15px;
+  font-style: italic;
+}
+
+.quote-author-small {
+  display: block;
+  font-size: 1rem;
+  color: #7f8c8d;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.quote-category-small {
+  display: inline-block;
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+  padding: 4px 12px;
+  border-radius: 15px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+/* Footer */
+.app-footer {
+  margin-top: 60px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.8);
+  padding: 30px 0;
+}
+
+.app-footer p {
+  margin-bottom: 15px;
+  font-size: 1.1rem;
+}
+
+.tech-stack {
+  display: flex;
+  justify-content: center;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.tech-stack span {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .container {
+    padding: 15px;
+  }
+  
+  .app-header h1 {
+    font-size: 2.5rem;
+  }
+  
+  .quote-text {
+    font-size: 1.5rem;
+  }
+  
+  .quote-actions {
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .btn {
+    width: 100%;
+    max-width: 300px;
+  }
+  
+  .section-header {
+    flex-direction: column;
+    text-align: center;
+  }
+  
+  .quotes-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .tech-stack {
+    gap: 10px;
+  }
+  
+  .tech-stack span {
+    font-size: 0.8rem;
+    padding: 6px 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-header h1 {
+    font-size: 2rem;
+  }
+  
+  .quote-text {
+    font-size: 1.3rem;
+  }
+  
+  .card {
+    padding: 25px;
+  }
+}

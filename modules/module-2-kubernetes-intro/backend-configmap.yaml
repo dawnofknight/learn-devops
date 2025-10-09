@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: quote-app
+  labels:
+    app: backend
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "quotes_db"
+  DB_USER: "quotes_user"

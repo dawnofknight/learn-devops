@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  database:
+    image: postgres:15-alpine
+    container_name: quote-db
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./app/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - quote-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./app/backend
+      dockerfile: Dockerfile
+    container_name: quote-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: database
+      DB_PORT: 5432
+    ports:
+      - "${PORT}:${PORT}"
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      # Mount source code for development (hot reload)
+      - ./app/backend:/app
+      - /app/node_modules
+    networks:
+      - quote-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./app/frontend
+      dockerfile: Dockerfile.dev
+    container_name: quote-frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      # Mount source code for development (hot reload)
+      - ./app/frontend:/app
+      - /app/node_modules
+    networks:
+      - quote-network
+    stdin_open: true
+    tty: true
+
+  # Redis for caching (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: quote-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - quote-network
+    profiles:
+      - caching
+      - full
+
+  # Adminer for database management (optional)
+  adminer:
+    image: adminer:latest
+    container_name: quote-adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - database
+    networks:
+      - quote-network
+    profiles:
+      - tools
+      - full
+
+# Named volumes for data persistence
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# Custom network for service communication
+networks:
+  quote-network:
+    driver: bridge

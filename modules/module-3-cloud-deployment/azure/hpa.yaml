@@ -1,0 +1,289 @@
+# Horizontal Pod Autoscaler Configuration for Azure AKS
+# This file contains HPA resources for automatic scaling of the Quote of the Day application
+
+---
+# Backend HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: quote-app
+  labels:
+    app: backend
+    tier: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-deployment
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 4
+        periodSeconds: 30
+      selectPolicy: Max
+
+---
+# Frontend HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: quote-app
+  labels:
+    app: frontend
+    tier: web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend-deployment
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 3
+        periodSeconds: 30
+      selectPolicy: Max
+
+---
+# PostgreSQL HPA (Optional - for read replicas if implemented)
+# Note: This is commented out as PostgreSQL typically runs as a single instance
+# Uncomment and modify if you implement read replicas or a PostgreSQL cluster
+#
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: postgres-read-replica-hpa
+#   namespace: quote-app
+#   labels:
+#     app: postgres-read-replica
+#     tier: database
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: postgres-read-replica-deployment
+#   minReplicas: 1
+#   maxReplicas: 3
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 70
+#   - type: Resource
+#     resource:
+#       name: memory
+#       target:
+#         type: Utilization
+#         averageUtilization: 80
+#   behavior:
+#     scaleDown:
+#       stabilizationWindowSeconds: 600
+#       policies:
+#       - type: Pods
+#         value: 1
+#         periodSeconds: 120
+#     scaleUp:
+#       stabilizationWindowSeconds: 120
+#       policies:
+#       - type: Pods
+#         value: 1
+#         periodSeconds: 60
+
+---
+# Vertical Pod Autoscaler for PostgreSQL (Optional)
+# Note: VPA requires the VPA controller to be installed in the cluster
+# This is useful for right-sizing database resources
+#
+# apiVersion: autoscaling.k8s.io/v1
+# kind: VerticalPodAutoscaler
+# metadata:
+#   name: postgres-vpa
+#   namespace: quote-app
+# spec:
+#   targetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: postgres-deployment
+#   updatePolicy:
+#     updateMode: "Auto"
+#   resourcePolicy:
+#     containerPolicies:
+#     - containerName: postgres
+#       minAllowed:
+#         cpu: 100m
+#         memory: 128Mi
+#       maxAllowed:
+#         cpu: 1000m
+#         memory: 1Gi
+#       controlledResources: ["cpu", "memory"]
+
+---
+# Pod Disruption Budget for Backend
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: quote-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: backend
+
+---
+# Pod Disruption Budget for Frontend
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: quote-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: frontend
+
+---
+# Pod Disruption Budget for PostgreSQL
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: quote-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: postgres
+
+---
+# Custom Metrics for Advanced HPA (Optional)
+# This requires a custom metrics adapter like Azure Monitor Adapter
+# Uncomment and configure if you want to scale based on custom metrics
+#
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: backend-custom-hpa
+#   namespace: quote-app
+#   labels:
+#     app: backend
+#     tier: api
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: backend-deployment
+#   minReplicas: 2
+#   maxReplicas: 15
+#   metrics:
+#   # Standard resource metrics
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 70
+#   # Custom metric: HTTP requests per second
+#   - type: Pods
+#     pods:
+#       metric:
+#         name: http_requests_per_second
+#       target:
+#         type: AverageValue
+#         averageValue: "100"
+#   # External metric: Azure Service Bus queue length
+#   - type: External
+#     external:
+#       metric:
+#         name: azure_servicebus_queue_length
+#         selector:
+#           matchLabels:
+#             queue: "quote-processing-queue"
+#       target:
+#         type: AverageValue
+#         averageValue: "10"
+#   behavior:
+#     scaleDown:
+#       stabilizationWindowSeconds: 300
+#       policies:
+#       - type: Percent
+#         value: 25
+#         periodSeconds: 60
+#     scaleUp:
+#       stabilizationWindowSeconds: 60
+#       policies:
+#       - type: Percent
+#         value: 50
+#         periodSeconds: 30
+#       - type: Pods
+#         value: 5
+#         periodSeconds: 30
+#       selectPolicy: Max

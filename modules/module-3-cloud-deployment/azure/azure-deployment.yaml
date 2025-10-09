@@ -1,0 +1,457 @@
+# Azure Kubernetes Service Deployment for Quote of the Day Application
+# This file contains all the Kubernetes resources needed to deploy the application on AKS
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quote-app
+  labels:
+    name: quote-app
+    environment: production
+    app: quote-of-the-day
+
+---
+# PostgreSQL Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: quote-app
+type: Opaque
+data:
+  # postgres / base64 encoded
+  postgres-password: cG9zdGdyZXM=
+
+---
+# PostgreSQL ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: quote-app
+data:
+  POSTGRES_DB: "quotes_db"
+  POSTGRES_USER: "postgres"
+  PGDATA: "/var/lib/postgresql/data/pgdata"
+
+---
+# PostgreSQL Init Script ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: quote-app
+data:
+  init.sql: |
+    -- Create quotes table if it doesn't exist
+    CREATE TABLE IF NOT EXISTS quotes (
+        id SERIAL PRIMARY KEY,
+        text TEXT NOT NULL,
+        author VARCHAR(255) NOT NULL,
+        category VARCHAR(100) DEFAULT 'general',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Insert sample quotes if table is empty
+    INSERT INTO quotes (text, author, category) 
+    SELECT * FROM (VALUES
+        ('The only way to do great work is to love what you do.', 'Steve Jobs', 'motivation'),
+        ('Innovation distinguishes between a leader and a follower.', 'Steve Jobs', 'innovation'),
+        ('Life is what happens to you while you''re busy making other plans.', 'John Lennon', 'life'),
+        ('The future belongs to those who believe in the beauty of their dreams.', 'Eleanor Roosevelt', 'dreams'),
+        ('It is during our darkest moments that we must focus to see the light.', 'Aristotle', 'inspiration'),
+        ('Success is not final, failure is not fatal: it is the courage to continue that counts.', 'Winston Churchill', 'success'),
+        ('The only impossible journey is the one you never begin.', 'Tony Robbins', 'motivation'),
+        ('In the middle of difficulty lies opportunity.', 'Albert Einstein', 'opportunity'),
+        ('Believe you can and you''re halfway there.', 'Theodore Roosevelt', 'belief'),
+        ('The best time to plant a tree was 20 years ago. The second best time is now.', 'Chinese Proverb', 'action')
+    ) AS v(text, author, category)
+    WHERE NOT EXISTS (SELECT 1 FROM quotes LIMIT 1);
+
+    -- Create index for better performance
+    CREATE INDEX IF NOT EXISTS idx_quotes_category ON quotes(category);
+    CREATE INDEX IF NOT EXISTS idx_quotes_author ON quotes(author);
+
+---
+# PostgreSQL PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: quote-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: azure-disk-premium
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-deployment
+  namespace: quote-app
+  labels:
+    app: postgres
+    tier: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tier: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: postgres-password
+        - name: PGDATA
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: PGDATA
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-init
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: postgres-init
+        configMap:
+          name: postgres-init-script
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: quote-app
+  labels:
+    app: postgres
+    tier: database
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+---
+# Backend ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: quote-app
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "quotes_db"
+  DB_USER: "postgres"
+  CORS_ORIGIN: "*"
+  LOG_LEVEL: "info"
+
+---
+# Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  namespace: quote-app
+  labels:
+    app: backend
+    tier: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: api
+    spec:
+      containers:
+      - name: backend
+        # Update this with your Azure Container Registry
+        image: quoteappacr.azurecr.io/quote-api:latest
+        ports:
+        - containerPort: 3001
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: NODE_ENV
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: PORT
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: postgres-password
+        - name: CORS_ORIGIN
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: CORS_ORIGIN
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: LOG_LEVEL
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 30
+
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: quote-app
+  labels:
+    app: backend
+    tier: api
+spec:
+  selector:
+    app: backend
+  ports:
+  - port: 3001
+    targetPort: 3001
+  type: ClusterIP
+
+---
+# Frontend ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: quote-app
+data:
+  # This will be updated by the deployment script with the actual backend URL
+  REACT_APP_API_URL: "http://backend-service:3001"
+
+---
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: quote-app
+  labels:
+    app: frontend
+    tier: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: web
+    spec:
+      containers:
+      - name: frontend
+        # Update this with your Azure Container Registry
+        image: quoteappacr.azurecr.io/quote-frontend:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: REACT_APP_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: frontend-config
+              key: REACT_APP_API_URL
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: quote-app
+  labels:
+    app: frontend
+    tier: web
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Resource Quota for the namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quote-app-quota
+  namespace: quote-app
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    persistentvolumeclaims: "5"
+    pods: "10"
+    services: "5"
+    secrets: "10"
+    configmaps: "10"
+
+---
+# Limit Range for the namespace
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: quote-app-limits
+  namespace: quote-app
+spec:
+  limits:
+  - default:
+      cpu: "200m"
+      memory: "256Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container
+  - max:
+      cpu: "1"
+      memory: "1Gi"
+    min:
+      cpu: "50m"
+      memory: "64Mi"
+    type: Container
+  - max:
+      storage: "50Gi"
+    min:
+      storage: "1Gi"
+    type: PersistentVolumeClaim

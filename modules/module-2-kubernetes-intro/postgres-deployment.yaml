@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-deployment
+  namespace: quote-app
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-init
+          mountPath: /docker-entrypoint-initdb.d
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - quotes_user
+            - -d
+            - quotes_db
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - quotes_user
+            - -d
+            - quotes_db
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-storage
+        emptyDir: {}
+      - name: postgres-init
+        configMap:
+          name: postgres-init-script
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: quote-app
+data:
+  init.sql: |
+    -- Create quotes table
+    CREATE TABLE IF NOT EXISTS quotes (
+        id SERIAL PRIMARY KEY,
+        text TEXT NOT NULL,
+        author VARCHAR(255) NOT NULL,
+        category VARCHAR(100) DEFAULT 'general',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Insert sample quotes
+    INSERT INTO quotes (text, author, category) VALUES
+    ('The only way to do great work is to love what you do.', 'Steve Jobs', 'motivation'),
+    ('Innovation distinguishes between a leader and a follower.', 'Steve Jobs', 'innovation'),
+    ('Life is what happens to you while you''re busy making other plans.', 'John Lennon', 'life'),
+    ('The future belongs to those who believe in the beauty of their dreams.', 'Eleanor Roosevelt', 'dreams'),
+    ('It is during our darkest moments that we must focus to see the light.', 'Aristotle', 'inspiration');
+
+    -- Create indexes
+    CREATE INDEX IF NOT EXISTS idx_quotes_category ON quotes(category);
+    CREATE INDEX IF NOT EXISTS idx_quotes_author ON quotes(author);

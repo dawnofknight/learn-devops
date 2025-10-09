@@ -1,0 +1,263 @@
+version: '3.8'
+
+services:
+  # k6 Load Testing Service
+  k6:
+    image: grafana/k6:latest
+    container_name: k6-performance-tests
+    networks:
+      - k6-network
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+      - ./reports:/reports
+    environment:
+      - K6_OUT=influxdb=http://influxdb:8086/k6
+      - K6_INFLUXDB_ORGANIZATION=k6-org
+      - K6_INFLUXDB_BUCKET=k6-bucket
+      - K6_INFLUXDB_TOKEN=k6-token-secret
+    depends_on:
+      - influxdb
+    command: >
+      run
+      --out influxdb=http://influxdb:8086/k6
+      --tag testid=quote-app-test
+      --tag environment=docker
+      /tests/load-test.js
+    profiles:
+      - testing
+
+  # InfluxDB for storing k6 metrics
+  influxdb:
+    image: influxdb:2.7-alpine
+    container_name: k6-influxdb
+    networks:
+      - k6-network
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=k6-org
+      - DOCKER_INFLUXDB_INIT_BUCKET=k6-bucket
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=k6-token-secret
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+      - ./influxdb/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Grafana for visualizing k6 metrics
+  grafana:
+    image: grafana/grafana:latest
+    container_name: k6-grafana
+    networks:
+      - k6-network
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-influxdb-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - influxdb
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # k6 Test Runner for different test types
+  k6-load-test:
+    image: grafana/k6:latest
+    container_name: k6-load-test
+    networks:
+      - k6-network
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+    environment:
+      - K6_OUT=influxdb=http://influxdb:8086/k6
+      - K6_INFLUXDB_ORGANIZATION=k6-org
+      - K6_INFLUXDB_BUCKET=k6-bucket
+      - K6_INFLUXDB_TOKEN=k6-token-secret
+    depends_on:
+      - influxdb
+    command: >
+      run
+      --out influxdb=http://influxdb:8086/k6
+      --out json=/results/load-test-results.json
+      --tag testid=load-test
+      --tag environment=docker
+      /tests/load-test.js
+    profiles:
+      - load-test
+
+  k6-stress-test:
+    image: grafana/k6:latest
+    container_name: k6-stress-test
+    networks:
+      - k6-network
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+    environment:
+      - K6_OUT=influxdb=http://influxdb:8086/k6
+      - K6_INFLUXDB_ORGANIZATION=k6-org
+      - K6_INFLUXDB_BUCKET=k6-bucket
+      - K6_INFLUXDB_TOKEN=k6-token-secret
+    depends_on:
+      - influxdb
+    command: >
+      run
+      --out influxdb=http://influxdb:8086/k6
+      --out json=/results/stress-test-results.json
+      --tag testid=stress-test
+      --tag environment=docker
+      /tests/stress-test.js
+    profiles:
+      - stress-test
+
+  k6-spike-test:
+    image: grafana/k6:latest
+    container_name: k6-spike-test
+    networks:
+      - k6-network
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+    environment:
+      - K6_OUT=influxdb=http://influxdb:8086/k6
+      - K6_INFLUXDB_ORGANIZATION=k6-org
+      - K6_INFLUXDB_BUCKET=k6-bucket
+      - K6_INFLUXDB_TOKEN=k6-token-secret
+    depends_on:
+      - influxdb
+    command: >
+      run
+      --out influxdb=http://influxdb:8086/k6
+      --out json=/results/spike-test-results.json
+      --tag testid=spike-test
+      --tag environment=docker
+      /tests/spike-test.js
+    profiles:
+      - spike-test
+
+  k6-volume-test:
+    image: grafana/k6:latest
+    container_name: k6-volume-test
+    networks:
+      - k6-network
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+    environment:
+      - K6_OUT=influxdb=http://influxdb:8086/k6
+      - K6_INFLUXDB_ORGANIZATION=k6-org
+      - K6_INFLUXDB_BUCKET=k6-bucket
+      - K6_INFLUXDB_TOKEN=k6-token-secret
+    depends_on:
+      - influxdb
+    command: >
+      run
+      --out influxdb=http://influxdb:8086/k6
+      --out json=/results/volume-test-results.json
+      --tag testid=volume-test
+      --tag environment=docker
+      /tests/volume-test.js
+    profiles:
+      - volume-test
+
+  k6-endurance-test:
+    image: grafana/k6:latest
+    container_name: k6-endurance-test
+    networks:
+      - k6-network
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+    environment:
+      - K6_OUT=influxdb=http://influxdb:8086/k6
+      - K6_INFLUXDB_ORGANIZATION=k6-org
+      - K6_INFLUXDB_BUCKET=k6-bucket
+      - K6_INFLUXDB_TOKEN=k6-token-secret
+    depends_on:
+      - influxdb
+    command: >
+      run
+      --out influxdb=http://influxdb:8086/k6
+      --out json=/results/endurance-test-results.json
+      --tag testid=endurance-test
+      --tag environment=docker
+      /tests/endurance-test.js
+    profiles:
+      - endurance-test
+
+  # Test Results Processor
+  results-processor:
+    image: node:18-alpine
+    container_name: k6-results-processor
+    networks:
+      - k6-network
+    volumes:
+      - ./results:/results
+      - ./reports:/reports
+      - ./scripts:/scripts
+    working_dir: /scripts
+    command: >
+      sh -c "
+        echo 'Installing dependencies...' &&
+        npm install --silent &&
+        echo 'Processing test results...' &&
+        node process-results.js
+      "
+    depends_on:
+      - k6-load-test
+      - k6-stress-test
+      - k6-spike-test
+    profiles:
+      - post-processing
+
+  # Nginx for serving reports
+  nginx-reports:
+    image: nginx:alpine
+    container_name: k6-nginx-reports
+    networks:
+      - k6-network
+    ports:
+      - "8080:80"
+    volumes:
+      - ./reports:/usr/share/nginx/html/reports
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - results-processor
+    profiles:
+      - reports
+
+networks:
+  k6-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  influxdb-data:
+    driver: local
+  influxdb-config:
+    driver: local
+  grafana-data:
+    driver: local

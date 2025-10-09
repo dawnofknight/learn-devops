@@ -1,0 +1,55 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: quote-app-cluster
+  region: us-west-2
+  version: "1.28"
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: quote-app-nodes
+    instanceType: t3.medium
+    minSize: 1
+    maxSize: 4
+    desiredCapacity: 2
+    volumeSize: 20
+    ssh:
+      allow: true
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        cloudWatch: true
+        ebs: true
+        efs: true
+        albIngress: true
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: aws-ebs-csi-driver
+
+# Optional: Configure logging
+cloudWatch:
+  clusterLogging:
+    enable: ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+
+# Optional: Configure private networking
+# privateCluster:
+#   enabled: true
+#   additionalEndpointServices:
+#   - "ec2"
+#   - "ecr.api"
+#   - "ecr.dkr"
+#   - "s3"
+
+# Optional: Configure Fargate profiles for serverless pods
+# fargateProfiles:
+#   - name: quote-app-fargate
+#     selectors:
+#       - namespace: quote-app
+#         labels:
+#           compute-type: fargate

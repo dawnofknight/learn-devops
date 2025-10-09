@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quote-app
+  labels:
+    app: quote-of-the-day
+    environment: development

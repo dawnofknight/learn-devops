@@ -1,0 +1,424 @@
+# GCP/GKE Deployment Configuration for Quote of the Day Application
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quote-app
+  labels:
+    name: quote-app
+    environment: production
+    cloud-provider: gcp
+
+---
+# PostgreSQL Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: quote-app
+type: Opaque
+data:
+  POSTGRES_PASSWORD: cXVvdGVzX3Bhc3N3b3JkMTIz  # quotes_password123 (base64 encoded)
+
+---
+# PostgreSQL ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: quote-app
+data:
+  POSTGRES_DB: "quotes_db"
+  POSTGRES_USER: "quotes_user"
+
+---
+# PostgreSQL Init Script ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: quote-app
+data:
+  init.sql: |
+    -- Create quotes table
+    CREATE TABLE IF NOT EXISTS quotes (
+        id SERIAL PRIMARY KEY,
+        text TEXT NOT NULL,
+        author VARCHAR(255) NOT NULL,
+        category VARCHAR(100) DEFAULT 'general',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Create indexes for better performance
+    CREATE INDEX IF NOT EXISTS idx_quotes_author ON quotes(author);
+    CREATE INDEX IF NOT EXISTS idx_quotes_category ON quotes(category);
+    CREATE INDEX IF NOT EXISTS idx_quotes_created_at ON quotes(created_at);
+
+    -- Insert sample quotes
+    INSERT INTO quotes (text, author, category) VALUES
+    ('The only way to do great work is to love what you do.', 'Steve Jobs', 'motivation'),
+    ('Innovation distinguishes between a leader and a follower.', 'Steve Jobs', 'innovation'),
+    ('Life is what happens to you while you''re busy making other plans.', 'John Lennon', 'life'),
+    ('The future belongs to those who believe in the beauty of their dreams.', 'Eleanor Roosevelt', 'dreams'),
+    ('It is during our darkest moments that we must focus to see the light.', 'Aristotle', 'inspiration'),
+    ('Success is not final, failure is not fatal: it is the courage to continue that counts.', 'Winston Churchill', 'success'),
+    ('The way to get started is to quit talking and begin doing.', 'Walt Disney', 'action'),
+    ('Don''t let yesterday take up too much of today.', 'Will Rogers', 'mindfulness'),
+    ('You learn more from failure than from success.', 'Unknown', 'learning'),
+    ('If you are working on something that you really care about, you don''t have to be pushed.', 'Steve Jobs', 'passion')
+    ON CONFLICT DO NOTHING;
+
+---
+# PostgreSQL PersistentVolumeClaim (using GKE SSD storage)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: quote-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gke-ssd-storage
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-deployment
+  namespace: quote-app
+  labels:
+    app: postgres
+    tier: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tier: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: postgres-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-init
+          mountPath: /docker-entrypoint-initdb.d
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - quotes_user
+            - -d
+            - quotes_db
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - quotes_user
+            - -d
+            - quotes_db
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: postgres-init
+        configMap:
+          name: postgres-init-script
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: quote-app
+  labels:
+    app: postgres
+    tier: database
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Backend ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: quote-app
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "quotes_db"
+  DB_USER: "quotes_user"
+
+---
+# Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  namespace: quote-app
+  labels:
+    app: backend
+    tier: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: api
+    spec:
+      containers:
+      - name: backend
+        image: gcr.io/<PROJECT_ID>/quote-api:latest  # Replace <PROJECT_ID> with your GCP project ID
+        ports:
+        - containerPort: 3001
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: NODE_ENV
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: PORT
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_PASSWORD
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: quote-app
+  labels:
+    app: backend
+    tier: api
+spec:
+  selector:
+    app: backend
+  ports:
+  - port: 3001
+    targetPort: 3001
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Frontend ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: quote-app
+data:
+  REACT_APP_API_URL: "http://backend-service:3001"
+
+---
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: quote-app
+  labels:
+    app: frontend
+    tier: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: web
+    spec:
+      containers:
+      - name: frontend
+        image: gcr.io/<PROJECT_ID>/quote-frontend:latest  # Replace <PROJECT_ID> with your GCP project ID
+        ports:
+        - containerPort: 80
+        env:
+        - name: REACT_APP_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: frontend-config
+              key: REACT_APP_API_URL
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: quote-app
+  labels:
+    app: frontend
+    tier: web
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Resource Quota for the namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quote-app-quota
+  namespace: quote-app
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "20"
+    persistentvolumeclaims: "5"
+    services: "10"
+
+---
+# Limit Range for pods
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: quote-app-limits
+  namespace: quote-app
+spec:
+  limits:
+  - default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container

@@ -1,0 +1,143 @@
+# GKE Cluster Configuration for Quote App
+# This file defines the Google Kubernetes Engine cluster configuration
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gke-cluster-config
+  namespace: default
+data:
+  cluster-name: "quote-app-cluster"
+  region: "us-central1"
+  project-id: "your-project-id"  # Replace with your GCP project ID
+  
+---
+# Cluster configuration (for reference - actual cluster creation done via gcloud CLI)
+# gcloud container clusters create quote-app-cluster \
+#   --region=us-central1 \
+#   --machine-type=e2-standard-2 \
+#   --num-nodes=2 \
+#   --min-nodes=1 \
+#   --max-nodes=5 \
+#   --enable-autoscaling \
+#   --enable-autorepair \
+#   --enable-autoupgrade \
+#   --disk-size=50GB \
+#   --disk-type=pd-ssd \
+#   --image-type=COS_CONTAINERD \
+#   --enable-network-policy \
+#   --enable-ip-alias \
+#   --enable-shielded-nodes \
+#   --shielded-secure-boot \
+#   --shielded-integrity-monitoring \
+#   --enable-autorepair \
+#   --enable-autoupgrade \
+#   --maintenance-window-start="2023-01-01T09:00:00Z" \
+#   --maintenance-window-end="2023-01-01T17:00:00Z" \
+#   --maintenance-window-recurrence="FREQ=WEEKLY;BYDAY=SA" \
+#   --workload-pool=your-project-id.svc.id.goog \
+#   --enable-managed-prometheus \
+#   --logging=SYSTEM,WORKLOAD \
+#   --monitoring=SYSTEM,WORKLOAD \
+#   --addons=HorizontalPodAutoscaling,HttpLoadBalancing,GcePersistentDiskCsiDriver
+
+# Node Pool Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gke-nodepool-config
+  namespace: default
+data:
+  # Primary node pool for general workloads
+  primary-pool: |
+    name: primary-pool
+    machine-type: e2-standard-2
+    disk-size: 50GB
+    disk-type: pd-ssd
+    num-nodes: 2
+    min-nodes: 1
+    max-nodes: 5
+    preemptible: false
+    
+  # Spot instance pool for cost optimization
+  spot-pool: |
+    name: spot-pool
+    machine-type: e2-standard-2
+    disk-size: 50GB
+    disk-type: pd-standard
+    num-nodes: 0
+    min-nodes: 0
+    max-nodes: 3
+    preemptible: true
+    spot: true
+
+---
+# Network Policy for GKE
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gke-network-policy
+  namespace: quote-app
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: quote-app
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    - namespaceSelector:
+        matchLabels:
+          name: gke-system
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: quote-app
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+
+---
+# GKE-specific StorageClass
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gke-ssd-storage
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-ssd
+  zones: us-central1-a,us-central1-b,us-central1-c
+  replication-type: regional-pd
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# Backup StorageClass for cost optimization
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gke-standard-storage
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard
+  zones: us-central1-a,us-central1-b,us-central1-c
+  replication-type: regional-pd
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer

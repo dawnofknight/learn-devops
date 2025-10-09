@@ -1,0 +1,212 @@
+# GCP Ingress Configuration for Quote of the Day Application
+# Uses Google Cloud Load Balancer with SSL termination
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: quote-app-ingress
+  namespace: quote-app
+  annotations:
+    # Use Google Cloud Load Balancer
+    kubernetes.io/ingress.class: "gce"
+    
+    # SSL Configuration
+    kubernetes.io/ingress.allow-http: "true"
+    ingress.gcp.kubernetes.io/managed-certificates: "quote-app-ssl-cert"
+    
+    # Global static IP (create separately)
+    kubernetes.io/ingress.global-static-ip-name: "quote-app-ip"
+    
+    # Backend configuration
+    cloud.google.com/backend-config: '{"default": "quote-app-backend-config"}'
+    
+    # Health check configuration
+    ingress.gcp.kubernetes.io/frontend-config: "quote-app-frontend-config"
+    
+    # CDN and caching
+    cloud.google.com/cdn-cache-mode: "CACHE_ALL_STATIC"
+    
+    # Security headers
+    ingress.gcp.kubernetes.io/pre-shared-cert: "quote-app-ssl-cert"
+    
+spec:
+  rules:
+  - host: quote-app.example.com  # Replace with your domain
+    http:
+      paths:
+      - path: /api/*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 3001
+      - path: /health
+        pathType: Exact
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 3001
+      - path: /*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+
+---
+# Managed SSL Certificate
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: quote-app-ssl-cert
+  namespace: quote-app
+spec:
+  domains:
+    - quote-app.example.com  # Replace with your domain
+    - www.quote-app.example.com  # Replace with your domain
+
+---
+# Backend Configuration for health checks and timeouts
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: quote-app-backend-config
+  namespace: quote-app
+spec:
+  # Health check configuration
+  healthCheck:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    type: HTTP
+    requestPath: /health
+    port: 3001
+  
+  # Connection draining timeout
+  connectionDraining:
+    drainingTimeoutSec: 60
+  
+  # Session affinity
+  sessionAffinity:
+    affinityType: "CLIENT_IP"
+    affinityCookieTtlSec: 3600
+  
+  # Timeout settings
+  timeoutSec: 30
+  
+  # Custom request headers
+  customRequestHeaders:
+    headers:
+    - "X-Forwarded-Proto:https"
+    - "X-Cloud-Provider:gcp"
+
+---
+# Frontend Configuration for security and performance
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: quote-app-frontend-config
+  namespace: quote-app
+spec:
+  # SSL Policy
+  sslPolicy: quote-app-ssl-policy
+  
+  # Redirect HTTP to HTTPS
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT
+
+---
+# Network Endpoint Group for better load balancing
+apiVersion: networking.gke.io/v1beta1
+kind: ServiceNetworkEndpointGroup
+metadata:
+  name: quote-app-neg
+  namespace: quote-app
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec: {}
+
+---
+# Additional Ingress for staging environment
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: quote-app-staging-ingress
+  namespace: quote-app
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.allow-http: "true"
+    ingress.gcp.kubernetes.io/managed-certificates: "quote-app-staging-ssl-cert"
+    kubernetes.io/ingress.global-static-ip-name: "quote-app-staging-ip"
+    cloud.google.com/backend-config: '{"default": "quote-app-backend-config"}'
+spec:
+  rules:
+  - host: staging.quote-app.example.com  # Replace with your staging domain
+    http:
+      paths:
+      - path: /api/*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 3001
+      - path: /health
+        pathType: Exact
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 3001
+      - path: /*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+
+---
+# Staging SSL Certificate
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: quote-app-staging-ssl-cert
+  namespace: quote-app
+spec:
+  domains:
+    - staging.quote-app.example.com  # Replace with your staging domain
+
+---
+# Cloud Armor Security Policy (optional)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloud-armor-policy
+  namespace: quote-app
+data:
+  policy.yaml: |
+    # Cloud Armor security policy configuration
+    # This would be applied via gcloud CLI:
+    # gcloud compute security-policies create quote-app-security-policy \
+    #   --description "Security policy for Quote App"
+    #
+    # gcloud compute security-policies rules create 1000 \
+    #   --security-policy quote-app-security-policy \
+    #   --expression "origin.region_code == 'US' || origin.region_code == 'CA'" \
+    #   --action "allow"
+    #
+    # gcloud compute security-policies rules create 2000 \
+    #   --security-policy quote-app-security-policy \
+    #   --expression "evaluatePreconfiguredExpr('xss-stable')" \
+    #   --action "deny-403"
+    #
+    # gcloud compute security-policies rules create 3000 \
+    #   --security-policy quote-app-security-policy \
+    #   --expression "evaluatePreconfiguredExpr('sqli-stable')" \
+    #   --action "deny-403"

@@ -1,0 +1,36 @@
+# Use specific version for reproducibility
+FROM node:18.18.2-alpine3.18
+
+# Install security updates
+RUN apk update && apk upgrade && apk add --no-cache dumb-init
+
+# Create app directory with proper permissions
+WORKDIR /app
+
+# Create non-root user early
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001 -G nodejs
+
+# Copy package files and install dependencies as root
+COPY package*.json ./
+RUN npm ci --only=production && \
+    npm cache clean --force
+
+# Copy application code
+COPY --chown=nodejs:nodejs . .
+
+# Switch to non-root user
+USER nodejs
+
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["dumb-init", "--"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node healthcheck.js
+
+# Expose port
+EXPOSE 3001
+
+# Start application
+CMD ["node", "server.js"]

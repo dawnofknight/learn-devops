@@ -1,0 +1,329 @@
+groups:
+  # Application-level alerts
+  - name: application.rules
+    rules:
+      - alert: ApplicationDown
+        expr: up{job=~"quote-app.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: quote-app
+        annotations:
+          summary: "Application {{ $labels.instance }} is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been down for more than 1 minute."
+          runbook_url: "https://wiki.company.com/runbooks/application-down"
+
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status=~"5.."}[5m]) /
+            rate(http_requests_total[5m])
+          ) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          service: quote-app
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }}% for {{ $labels.job }} on {{ $labels.instance }}"
+          runbook_url: "https://wiki.company.com/runbooks/high-error-rate"
+
+      - alert: HighResponseTime
+        expr: |
+          histogram_quantile(0.95, 
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: quote-app
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s for {{ $labels.job }}"
+          runbook_url: "https://wiki.company.com/runbooks/high-response-time"
+
+      - alert: HighRequestRate
+        expr: rate(http_requests_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: quote-app
+        annotations:
+          summary: "Unusually high request rate"
+          description: "Request rate is {{ $value }} req/s for {{ $labels.job }} on {{ $labels.instance }}"
+
+      - alert: LowRequestRate
+        expr: rate(http_requests_total[5m]) < 0.1
+        for: 15m
+        labels:
+          severity: warning
+          service: quote-app
+        annotations:
+          summary: "Unusually low request rate"
+          description: "Request rate is {{ $value }} req/s for {{ $labels.job }} on {{ $labels.instance }}"
+
+  # Database alerts
+  - name: database.rules
+    rules:
+      - alert: DatabaseDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "Database is down"
+          description: "PostgreSQL database has been down for more than 1 minute."
+          runbook_url: "https://wiki.company.com/runbooks/database-down"
+
+      - alert: DatabaseConnectionsHigh
+        expr: |
+          (
+            pg_stat_database_numbackends /
+            pg_settings_max_connections
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "High database connection usage"
+          description: "Database connection usage is {{ $value }}%"
+
+      - alert: DatabaseSlowQueries
+        expr: rate(pg_stat_database_tup_returned[5m]) / rate(pg_stat_database_tup_fetched[5m]) < 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Database queries are slow"
+          description: "Query efficiency is {{ $value }}% (returned/fetched ratio)"
+
+      - alert: DatabaseDeadlocks
+        expr: rate(pg_stat_database_deadlocks[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Database deadlocks detected"
+          description: "{{ $value }} deadlocks per second detected"
+
+  # Infrastructure alerts
+  - name: infrastructure.rules
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value }}% on {{ $labels.instance }}"
+          runbook_url: "https://wiki.company.com/runbooks/high-cpu"
+
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) /
+            node_memory_MemTotal_bytes
+          ) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }}% on {{ $labels.instance }}"
+          runbook_url: "https://wiki.company.com/runbooks/high-memory"
+
+      - alert: DiskSpaceLow
+        expr: |
+          (
+            (node_filesystem_size_bytes - node_filesystem_free_bytes) /
+            node_filesystem_size_bytes
+          ) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          service: infrastructure
+        annotations:
+          summary: "Low disk space"
+          description: "Disk usage is {{ $value }}% on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          runbook_url: "https://wiki.company.com/runbooks/low-disk-space"
+
+      - alert: HighDiskIOWait
+        expr: rate(node_cpu_seconds_total{mode="iowait"}[5m]) * 100 > 20
+        for: 10m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "High disk I/O wait"
+          description: "I/O wait is {{ $value }}% on {{ $labels.instance }}"
+
+      - alert: NetworkInterfaceDown
+        expr: node_network_up == 0
+        for: 1m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "Network interface down"
+          description: "Network interface {{ $labels.device }} is down on {{ $labels.instance }}"
+
+  # Container alerts
+  - name: container.rules
+    rules:
+      - alert: ContainerKilled
+        expr: time() - container_last_seen > 60
+        for: 1m
+        labels:
+          severity: warning
+          service: containers
+        annotations:
+          summary: "Container killed"
+          description: "Container {{ $labels.name }} has disappeared"
+
+      - alert: ContainerCPUUsage
+        expr: |
+          (
+            rate(container_cpu_usage_seconds_total[5m]) /
+            container_spec_cpu_quota * container_spec_cpu_period
+          ) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: containers
+        annotations:
+          summary: "High container CPU usage"
+          description: "Container {{ $labels.name }} CPU usage is {{ $value }}%"
+
+      - alert: ContainerMemoryUsage
+        expr: |
+          (
+            container_memory_usage_bytes /
+            container_spec_memory_limit_bytes
+          ) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          service: containers
+        annotations:
+          summary: "High container memory usage"
+          description: "Container {{ $labels.name }} memory usage is {{ $value }}%"
+
+      - alert: ContainerRestartingTooOften
+        expr: rate(container_start_time_seconds[15m]) * 60 * 15 > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: containers
+        annotations:
+          summary: "Container restarting too often"
+          description: "Container {{ $labels.name }} has restarted {{ $value }} times in the last 15 minutes"
+
+  # Business logic alerts
+  - name: business.rules
+    rules:
+      - alert: LowQuoteRequests
+        expr: rate(business_quote_requests_total[1h]) < 0.01
+        for: 30m
+        labels:
+          severity: warning
+          service: business
+        annotations:
+          summary: "Low quote request rate"
+          description: "Quote request rate is {{ $value }} per second (averaged over 1 hour)"
+
+      - alert: HighQuoteRequestFailures
+        expr: |
+          (
+            rate(business_quote_requests_total{status="error"}[5m]) /
+            rate(business_quote_requests_total[5m])
+          ) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: business
+        annotations:
+          summary: "High quote request failure rate"
+          description: "Quote request failure rate is {{ $value }}%"
+
+      - alert: UnusualUserActivity
+        expr: rate(business_user_registrations_total[1h]) > 10
+        for: 10m
+        labels:
+          severity: info
+          service: business
+        annotations:
+          summary: "Unusual user registration activity"
+          description: "User registration rate is {{ $value }} per second (averaged over 1 hour)"
+
+  # Security alerts
+  - name: security.rules
+    rules:
+      - alert: TooManyFailedLogins
+        expr: rate(http_requests_total{status="401"}[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "Too many failed login attempts"
+          description: "{{ $value }} failed login attempts per second"
+
+      - alert: SuspiciousTraffic
+        expr: rate(http_requests_total{status="404"}[5m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "High rate of 404 errors"
+          description: "{{ $value }} 404 errors per second - possible scanning activity"
+
+  # Prometheus system alerts
+  - name: prometheus.rules
+    rules:
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful != 1
+        for: 5m
+        labels:
+          severity: warning
+          service: monitoring
+        annotations:
+          summary: "Prometheus configuration reload failed"
+          description: "Prometheus configuration reload has failed"
+
+      - alert: PrometheusNotificationQueueRunningFull
+        expr: predict_linear(prometheus_notifications_queue_length[5m], 60 * 30) > prometheus_notifications_queue_capacity
+        for: 5m
+        labels:
+          severity: warning
+          service: monitoring
+        annotations:
+          summary: "Prometheus notification queue is running full"
+          description: "Prometheus alert notification queue is running full"
+
+      - alert: PrometheusErrorSendingAlertsToAnyAlertmanager
+        expr: rate(prometheus_notifications_errors_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          service: monitoring
+        annotations:
+          summary: "Prometheus encounters errors while sending alerts to Alertmanager"
+          description: "{{ $value }} errors per second sending alerts"
+
+      - alert: PrometheusTargetScrapingSlow
+        expr: prometheus_target_interval_length_seconds{quantile="0.9"} > 60
+        for: 5m
+        labels:
+          severity: warning
+          service: monitoring
+        annotations:
+          summary: "Prometheus target scraping is slow"
+          description: "{{ $labels.instance }} is taking {{ $value }}s to scrape"

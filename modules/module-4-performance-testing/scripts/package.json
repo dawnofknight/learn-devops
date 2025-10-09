@@ -1,0 +1,34 @@
+{
+  "name": "k6-results-processor",
+  "version": "1.0.0",
+  "description": "Node.js scripts for processing k6 performance test results and generating reports",
+  "main": "process-results.js",
+  "scripts": {
+    "process": "node process-results.js",
+    "summary": "node generate-summary.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "k6",
+    "performance",
+    "testing",
+    "results",
+    "reporting",
+    "analysis"
+  ],
+  "author": "Performance Testing Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-org/learn-container.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/learn-container/issues"
+  },
+  "homepage": "https://github.com/your-org/learn-container#readme"
+}

@@ -1,0 +1,346 @@
+name: Performance Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run performance tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of performance test to run'
+        required: true
+        default: 'load'
+        type: choice
+        options:
+          - load
+          - stress
+          - spike
+          - volume
+          - endurance
+          - all
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      base_url:
+        description: 'Base URL for testing (optional)'
+        required: false
+        type: string
+
+env:
+  K6_VERSION: '0.47.0'
+  NODE_VERSION: '18'
+
+jobs:
+  performance-tests:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        test_type: 
+          - ${{ github.event.inputs.test_type == 'all' && 'load' || github.event.inputs.test_type || 'load' }}
+          - ${{ github.event.inputs.test_type == 'all' && 'stress' || '' }}
+          - ${{ github.event.inputs.test_type == 'all' && 'spike' || '' }}
+          - ${{ github.event.inputs.test_type == 'all' && 'volume' || '' }}
+        exclude:
+          - test_type: ''
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: modules/module-4-performance-testing/scripts/package.json
+    
+    - name: Install k6
+      run: |
+        sudo gpg -k
+        sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+        echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+        sudo apt-get update
+        sudo apt-get install k6=${{ env.K6_VERSION }}
+    
+    - name: Install Node.js dependencies
+      run: |
+        cd modules/module-4-performance-testing/scripts
+        npm install
+    
+    - name: Prepare test environment
+      run: |
+        mkdir -p modules/module-4-performance-testing/results
+        mkdir -p modules/module-4-performance-testing/reports
+        
+        # Set environment variables
+        echo "K6_ENVIRONMENT=${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_ENV
+        echo "K6_BASE_URL=${{ github.event.inputs.base_url || 'https://staging.example.com' }}" >> $GITHUB_ENV
+        echo "K6_TEST_ID=${{ matrix.test_type }}_ci_$(date +%Y%m%d_%H%M%S)" >> $GITHUB_ENV
+    
+    - name: Run performance test
+      id: performance_test
+      run: |
+        cd modules/module-4-performance-testing
+        
+        # Set test-specific configurations
+        case "${{ matrix.test_type }}" in
+          "load")
+            TEST_FILE="tests/load-test.js"
+            MAX_FAILURE_RATE=5
+            MAX_AVG_RESPONSE=1000
+            ;;
+          "stress")
+            TEST_FILE="tests/stress-test.js"
+            MAX_FAILURE_RATE=10
+            MAX_AVG_RESPONSE=2000
+            ;;
+          "spike")
+            TEST_FILE="tests/spike-test.js"
+            MAX_FAILURE_RATE=15
+            MAX_AVG_RESPONSE=3000
+            ;;
+          "volume")
+            TEST_FILE="tests/volume-test.js"
+            MAX_FAILURE_RATE=8
+            MAX_AVG_RESPONSE=1500
+            ;;
+          "endurance")
+            TEST_FILE="tests/endurance-test.js"
+            MAX_FAILURE_RATE=5
+            MAX_AVG_RESPONSE=1200
+            ;;
+          *)
+            echo "Unknown test type: ${{ matrix.test_type }}"
+            exit 1
+            ;;
+        esac
+        
+        echo "Running ${{ matrix.test_type }} test..."
+        echo "Test file: $TEST_FILE"
+        echo "Max failure rate: $MAX_FAILURE_RATE%"
+        echo "Max avg response time: ${MAX_AVG_RESPONSE}ms"
+        
+        # Run k6 test with JSON output
+        k6 run \
+          --out json=results/${K6_TEST_ID}.json \
+          --tag testid=${K6_TEST_ID} \
+          --tag environment=${K6_ENVIRONMENT} \
+          --tag testtype=${{ matrix.test_type }} \
+          --tag ci=true \
+          --tag branch=${GITHUB_REF_NAME} \
+          --tag commit=${GITHUB_SHA} \
+          $TEST_FILE
+        
+        # Store test results for later steps
+        echo "test_file=$TEST_FILE" >> $GITHUB_OUTPUT
+        echo "max_failure_rate=$MAX_FAILURE_RATE" >> $GITHUB_OUTPUT
+        echo "max_avg_response=$MAX_AVG_RESPONSE" >> $GITHUB_OUTPUT
+    
+    - name: Process test results
+      if: always()
+      run: |
+        cd modules/module-4-performance-testing/scripts
+        
+        # Process results and generate HTML report
+        if [ -f "../results/${K6_TEST_ID}.json" ]; then
+          node process-results.js "../results/${K6_TEST_ID}.json" "../reports/${K6_TEST_ID}_report.html"
+          echo "✅ HTML report generated: reports/${K6_TEST_ID}_report.html"
+        else
+          echo "❌ No results file found: results/${K6_TEST_ID}.json"
+        fi
+    
+    - name: Validate performance thresholds
+      if: always()
+      run: |
+        cd modules/module-4-performance-testing
+        
+        if [ ! -f "results/${K6_TEST_ID}.json" ]; then
+          echo "❌ No results file found for validation"
+          exit 1
+        fi
+        
+        # Extract key metrics from k6 results
+        FAILURE_RATE=$(grep '"name":"http_req_failed"' results/${K6_TEST_ID}.json | tail -1 | jq -r '.data.values.rate // 0' | awk '{print $1 * 100}')
+        AVG_RESPONSE=$(grep '"name":"http_req_duration"' results/${K6_TEST_ID}.json | tail -1 | jq -r '.data.values.avg // 0')
+        TOTAL_REQUESTS=$(grep '"name":"http_reqs"' results/${K6_TEST_ID}.json | tail -1 | jq -r '.data.values.count // 0')
+        
+        echo "📊 Performance Metrics:"
+        echo "   - Failure Rate: ${FAILURE_RATE}%"
+        echo "   - Average Response Time: ${AVG_RESPONSE}ms"
+        echo "   - Total Requests: ${TOTAL_REQUESTS}"
+        
+        # Validate thresholds
+        THRESHOLD_FAILURES=0
+        
+        if (( $(echo "$FAILURE_RATE > ${{ steps.performance_test.outputs.max_failure_rate }}" | bc -l) )); then
+          echo "❌ THRESHOLD VIOLATION: Failure rate ${FAILURE_RATE}% exceeds maximum ${{ steps.performance_test.outputs.max_failure_rate }}%"
+          THRESHOLD_FAILURES=$((THRESHOLD_FAILURES + 1))
+        else
+          echo "✅ Failure rate within acceptable limits"
+        fi
+        
+        if (( $(echo "$AVG_RESPONSE > ${{ steps.performance_test.outputs.max_avg_response }}" | bc -l) )); then
+          echo "❌ THRESHOLD VIOLATION: Average response time ${AVG_RESPONSE}ms exceeds maximum ${{ steps.performance_test.outputs.max_avg_response }}ms"
+          THRESHOLD_FAILURES=$((THRESHOLD_FAILURES + 1))
+        else
+          echo "✅ Average response time within acceptable limits"
+        fi
+        
+        if [ $THRESHOLD_FAILURES -gt 0 ]; then
+          echo "❌ Performance test failed: $THRESHOLD_FAILURES threshold violations"
+          exit 1
+        else
+          echo "✅ All performance thresholds passed"
+        fi
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-results-${{ matrix.test_type }}-${{ github.run_number }}
+        path: |
+          modules/module-4-performance-testing/results/
+          modules/module-4-performance-testing/reports/
+        retention-days: 30
+    
+    - name: Comment PR with results
+      if: github.event_name == 'pull_request' && always()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          
+          const resultsFile = 'modules/module-4-performance-testing/results/${{ env.K6_TEST_ID }}.json';
+          
+          if (!fs.existsSync(resultsFile)) {
+            console.log('No results file found for PR comment');
+            return;
+          }
+          
+          // Extract summary metrics (simplified)
+          const rawData = fs.readFileSync(resultsFile, 'utf8');
+          const lines = rawData.trim().split('\n');
+          
+          let totalRequests = 0;
+          let failureRate = 0;
+          let avgResponseTime = 0;
+          
+          lines.forEach(line => {
+            try {
+              const data = JSON.parse(line);
+              if (data.type === 'Metric') {
+                if (data.data.name === 'http_reqs') {
+                  totalRequests = data.data.values.count || 0;
+                } else if (data.data.name === 'http_req_failed') {
+                  failureRate = ((data.data.values.rate || 0) * 100).toFixed(2);
+                } else if (data.data.name === 'http_req_duration') {
+                  avgResponseTime = (data.data.values.avg || 0).toFixed(2);
+                }
+              }
+            } catch (e) {
+              // Skip invalid JSON
+            }
+          });
+          
+          const testStatus = failureRate > ${{ steps.performance_test.outputs.max_failure_rate }} || 
+                           avgResponseTime > ${{ steps.performance_test.outputs.max_avg_response }} ? '❌ FAILED' : '✅ PASSED';
+          
+          const comment = `## 🚀 Performance Test Results - ${{ matrix.test_type }}
+          
+          **Status:** ${testStatus}
+          
+          ### 📊 Key Metrics
+          - **Total Requests:** ${totalRequests.toLocaleString()}
+          - **Failure Rate:** ${failureRate}% (max: ${{ steps.performance_test.outputs.max_failure_rate }}%)
+          - **Average Response Time:** ${avgResponseTime}ms (max: ${{ steps.performance_test.outputs.max_avg_response }}ms)
+          
+          ### 🎯 Test Configuration
+          - **Test Type:** ${{ matrix.test_type }}
+          - **Environment:** ${{ env.K6_ENVIRONMENT }}
+          - **Base URL:** ${{ env.K6_BASE_URL }}
+          - **Test ID:** ${{ env.K6_TEST_ID }}
+          
+          📄 Detailed results are available in the workflow artifacts.
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  generate-summary:
+    needs: performance-tests
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    
+    - name: Download all test results
+      uses: actions/download-artifact@v4
+      with:
+        path: downloaded-artifacts
+    
+    - name: Consolidate results and generate summary
+      run: |
+        mkdir -p modules/module-4-performance-testing/results
+        mkdir -p modules/module-4-performance-testing/reports
+        
+        # Copy all result files to a single directory
+        find downloaded-artifacts -name "*.json" -exec cp {} modules/module-4-performance-testing/results/ \;
+        find downloaded-artifacts -name "*.html" -exec cp {} modules/module-4-performance-testing/reports/ \;
+        
+        # Install dependencies and generate summary
+        cd modules/module-4-performance-testing/scripts
+        npm install
+        
+        if [ -n "$(ls -A ../results/*.json 2>/dev/null)" ]; then
+          node generate-summary.js ../results ../reports/performance-summary.html
+          echo "✅ Performance summary generated"
+        else
+          echo "⚠️ No result files found for summary generation"
+        fi
+    
+    - name: Upload consolidated results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-summary-${{ github.run_number }}
+        path: |
+          modules/module-4-performance-testing/reports/performance-summary.html
+        retention-days: 90
+
+  notify-teams:
+    needs: [performance-tests, generate-summary]
+    if: failure() && (github.event_name == 'schedule' || github.event_name == 'push')
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Notify team of performance test failures
+      run: |
+        echo "🚨 Performance tests failed!"
+        echo "Branch: ${{ github.ref_name }}"
+        echo "Commit: ${{ github.sha }}"
+        echo "Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        
+        # Here you could integrate with Slack, Teams, or other notification systems
+        # Example: curl -X POST -H 'Content-type: application/json' --data '{"text":"Performance tests failed!"}' $SLACK_WEBHOOK_URL

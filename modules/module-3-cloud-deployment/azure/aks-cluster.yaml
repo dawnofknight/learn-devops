@@ -1,0 +1,179 @@
+# Azure Kubernetes Service (AKS) Cluster Configuration
+# This file contains the configuration for creating an AKS cluster
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aks-cluster-config
+  namespace: default
+data:
+  # Cluster Configuration
+  cluster-name: "quote-app-cluster"
+  resource-group: "quote-app-rg"
+  location: "eastus"
+  kubernetes-version: "1.28.3"
+  
+  # Node Pool Configuration
+  node-count: "2"
+  min-count: "1"
+  max-count: "4"
+  node-vm-size: "Standard_D2s_v3"
+  node-osdisk-size: "30"
+  
+  # Networking Configuration
+  network-plugin: "azure"
+  network-policy: "azure"
+  service-cidr: "10.0.0.0/16"
+  dns-service-ip: "10.0.0.10"
+  docker-bridge-address: "172.17.0.1/16"
+  
+  # Add-ons Configuration
+  enable-addons: "monitoring,http_application_routing,azure-policy"
+  workspace-resource-id: ""  # Will be created during deployment
+
+---
+# Azure CLI commands to create the cluster (for reference)
+# These commands are embedded in the deployment script
+
+# Create resource group
+# az group create --name quote-app-rg --location eastus
+
+# Create AKS cluster
+# az aks create \
+#   --resource-group quote-app-rg \
+#   --name quote-app-cluster \
+#   --node-count 2 \
+#   --enable-addons monitoring,http_application_routing,azure-policy \
+#   --generate-ssh-keys \
+#   --kubernetes-version 1.28.3 \
+#   --node-vm-size Standard_D2s_v3 \
+#   --node-osdisk-size 30 \
+#   --enable-cluster-autoscaler \
+#   --min-count 1 \
+#   --max-count 4 \
+#   --network-plugin azure \
+#   --network-policy azure \
+#   --service-cidr 10.0.0.0/16 \
+#   --dns-service-ip 10.0.0.10 \
+#   --docker-bridge-address 172.17.0.1/16 \
+#   --enable-managed-identity \
+#   --attach-acr quote-app-acr
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aks-nodepool-config
+  namespace: default
+data:
+  # Additional node pools configuration
+  
+  # Spot instance node pool for cost optimization
+  spot-nodepool-name: "spotpool"
+  spot-node-count: "0"
+  spot-min-count: "0"
+  spot-max-count: "3"
+  spot-vm-size: "Standard_D2s_v3"
+  spot-priority: "Spot"
+  spot-eviction-policy: "Delete"
+  spot-max-price: "-1"  # Pay up to on-demand price
+  
+  # System node pool (for system pods)
+  system-nodepool-name: "systempool"
+  system-node-count: "1"
+  system-min-count: "1"
+  system-max-count: "2"
+  system-vm-size: "Standard_D2s_v3"
+  system-mode: "System"
+
+---
+# Network Policy for the quote-app namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: quote-app-network-policy
+  namespace: quote-app
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: quote-app
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-basic
+    - podSelector: {}
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: quote-app
+    - podSelector: {}
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+
+---
+# Azure Disk Storage Classes
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-disk-premium
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Premium_LRS
+  kind: managed
+  cachingmode: ReadOnly
+  fsType: ext4
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-disk-standard
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Standard_LRS
+  kind: managed
+  cachingmode: ReadOnly
+  fsType: ext4
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# Azure File Storage Class (for shared storage)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-file-premium
+provisioner: file.csi.azure.com
+parameters:
+  skuName: Premium_LRS
+  protocol: smb
+  allowBlobPublicAccess: "false"
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+mountOptions:
+  - dir_mode=0777
+  - file_mode=0777
+  - uid=0
+  - gid=0
+  - mfsymlinks
+  - cache=strict
+  - nosharesock

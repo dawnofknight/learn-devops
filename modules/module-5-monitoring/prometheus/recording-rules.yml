@@ -1,0 +1,239 @@
+groups:
+  # HTTP request recording rules
+  - name: http_requests.rules
+    interval: 30s
+    rules:
+      # Request rate by job
+      - record: job:http_requests:rate5m
+        expr: sum(rate(http_requests_total[5m])) by (job)
+
+      - record: job:http_requests:rate1h
+        expr: sum(rate(http_requests_total[1h])) by (job)
+
+      # Request rate by job and status
+      - record: job_status:http_requests:rate5m
+        expr: sum(rate(http_requests_total[5m])) by (job, status)
+
+      # Error rate by job
+      - record: job:http_request_errors:rate5m
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (job) /
+          sum(rate(http_requests_total[5m])) by (job)
+
+      - record: job:http_request_errors:rate1h
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[1h])) by (job) /
+          sum(rate(http_requests_total[1h])) by (job)
+
+      # Response time percentiles by job
+      - record: job:http_request_duration:p50
+        expr: histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (job, le))
+
+      - record: job:http_request_duration:p95
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (job, le))
+
+      - record: job:http_request_duration:p99
+        expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (job, le))
+
+      # Average response time by job
+      - record: job:http_request_duration:mean5m
+        expr: |
+          sum(rate(http_request_duration_seconds_sum[5m])) by (job) /
+          sum(rate(http_request_duration_seconds_count[5m])) by (job)
+
+  # Infrastructure recording rules
+  - name: infrastructure.rules
+    interval: 30s
+    rules:
+      # CPU usage by instance
+      - record: instance:cpu_usage:rate5m
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+
+      # Memory usage by instance
+      - record: instance:memory_usage:ratio
+        expr: |
+          (
+            (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) /
+            node_memory_MemTotal_bytes
+          )
+
+      # Disk usage by instance and mountpoint
+      - record: instance_mountpoint:disk_usage:ratio
+        expr: |
+          (
+            (node_filesystem_size_bytes - node_filesystem_free_bytes) /
+            node_filesystem_size_bytes
+          )
+
+      # Network I/O by instance
+      - record: instance:network_receive_bytes:rate5m
+        expr: sum(rate(node_network_receive_bytes_total[5m])) by (instance)
+
+      - record: instance:network_transmit_bytes:rate5m
+        expr: sum(rate(node_network_transmit_bytes_total[5m])) by (instance)
+
+      # Disk I/O by instance
+      - record: instance:disk_read_bytes:rate5m
+        expr: sum(rate(node_disk_read_bytes_total[5m])) by (instance)
+
+      - record: instance:disk_write_bytes:rate5m
+        expr: sum(rate(node_disk_written_bytes_total[5m])) by (instance)
+
+  # Container recording rules
+  - name: container.rules
+    interval: 30s
+    rules:
+      # Container CPU usage
+      - record: container:cpu_usage:rate5m
+        expr: |
+          sum(rate(container_cpu_usage_seconds_total[5m])) by (name, instance)
+
+      # Container memory usage
+      - record: container:memory_usage:bytes
+        expr: sum(container_memory_usage_bytes) by (name, instance)
+
+      # Container memory usage ratio
+      - record: container:memory_usage:ratio
+        expr: |
+          sum(container_memory_usage_bytes) by (name, instance) /
+          sum(container_spec_memory_limit_bytes) by (name, instance)
+
+      # Container network I/O
+      - record: container:network_receive_bytes:rate5m
+        expr: sum(rate(container_network_receive_bytes_total[5m])) by (name, instance)
+
+      - record: container:network_transmit_bytes:rate5m
+        expr: sum(rate(container_network_transmit_bytes_total[5m])) by (name, instance)
+
+      # Container filesystem usage
+      - record: container:fs_usage:ratio
+        expr: |
+          sum(container_fs_usage_bytes) by (name, instance) /
+          sum(container_fs_limit_bytes) by (name, instance)
+
+  # Database recording rules
+  - name: database.rules
+    interval: 30s
+    rules:
+      # Database connection usage
+      - record: database:connections:ratio
+        expr: |
+          sum(pg_stat_database_numbackends) by (instance) /
+          sum(pg_settings_max_connections) by (instance)
+
+      # Database transaction rate
+      - record: database:transactions:rate5m
+        expr: sum(rate(pg_stat_database_xact_commit[5m]) + rate(pg_stat_database_xact_rollback[5m])) by (instance)
+
+      # Database query rate
+      - record: database:queries:rate5m
+        expr: sum(rate(pg_stat_database_tup_returned[5m]) + rate(pg_stat_database_tup_fetched[5m])) by (instance)
+
+      # Database cache hit ratio
+      - record: database:cache_hit:ratio
+        expr: |
+          sum(pg_stat_database_blks_hit) by (instance) /
+          (sum(pg_stat_database_blks_hit) by (instance) + sum(pg_stat_database_blks_read) by (instance))
+
+  # Business metrics recording rules
+  - name: business.rules
+    interval: 60s
+    rules:
+      # Quote request rate by category
+      - record: category:quote_requests:rate1h
+        expr: sum(rate(business_quote_requests_total[1h])) by (category)
+
+      # User registration rate by source
+      - record: source:user_registrations:rate1h
+        expr: sum(rate(business_user_registrations_total[1h])) by (source)
+
+      # Total active users (example - would need actual metric)
+      - record: business:active_users:total
+        expr: sum(business_active_users_gauge)
+
+      # Revenue metrics (example - would need actual metrics)
+      - record: business:revenue:rate1h
+        expr: sum(rate(business_revenue_total[1h]))
+
+  # SLA and SLI recording rules
+  - name: sla.rules
+    interval: 60s
+    rules:
+      # Availability SLI (percentage of successful requests)
+      - record: sli:availability:ratio5m
+        expr: |
+          sum(rate(http_requests_total{status!~"5.."}[5m])) /
+          sum(rate(http_requests_total[5m]))
+
+      - record: sli:availability:ratio1h
+        expr: |
+          sum(rate(http_requests_total{status!~"5.."}[1h])) /
+          sum(rate(http_requests_total[1h]))
+
+      # Latency SLI (percentage of requests under threshold)
+      - record: sli:latency:ratio5m
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m])) /
+          sum(rate(http_request_duration_seconds_count[5m]))
+
+      - record: sli:latency:ratio1h
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{le="0.5"}[1h])) /
+          sum(rate(http_request_duration_seconds_count[1h]))
+
+      # Error budget burn rate (for 99.9% SLA)
+      - record: sli:error_budget_burn_rate:5m
+        expr: |
+          (1 - sli:availability:ratio5m) / (1 - 0.999)
+
+      - record: sli:error_budget_burn_rate:1h
+        expr: |
+          (1 - sli:availability:ratio1h) / (1 - 0.999)
+
+  # Aggregated cluster metrics
+  - name: cluster.rules
+    interval: 60s
+    rules:
+      # Total cluster CPU usage
+      - record: cluster:cpu_usage:ratio
+        expr: |
+          1 - (
+            sum(rate(node_cpu_seconds_total{mode="idle"}[5m])) /
+            sum(rate(node_cpu_seconds_total[5m]))
+          )
+
+      # Total cluster memory usage
+      - record: cluster:memory_usage:ratio
+        expr: |
+          1 - (
+            sum(node_memory_MemAvailable_bytes) /
+            sum(node_memory_MemTotal_bytes)
+          )
+
+      # Total cluster disk usage
+      - record: cluster:disk_usage:ratio
+        expr: |
+          1 - (
+            sum(node_filesystem_free_bytes{fstype!="tmpfs"}) /
+            sum(node_filesystem_size_bytes{fstype!="tmpfs"})
+          )
+
+      # Total cluster network I/O
+      - record: cluster:network_io:rate5m
+        expr: |
+          sum(rate(node_network_receive_bytes_total[5m])) +
+          sum(rate(node_network_transmit_bytes_total[5m]))
+
+      # Total requests across all services
+      - record: cluster:http_requests:rate5m
+        expr: sum(rate(http_requests_total[5m]))
+
+      # Total errors across all services
+      - record: cluster:http_errors:rate5m
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m]))
+
+      # Cluster error rate
+      - record: cluster:error_rate:ratio5m
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) /
+          sum(rate(http_requests_total[5m]))

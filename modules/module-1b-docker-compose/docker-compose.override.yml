@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  backend:
+    volumes:
+      - ./app/backend:/app
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+      DEBUG: "app:*"
+    command: npm run dev
+
+  frontend:
+    volumes:
+      - ./app/frontend:/app
+      - /app/node_modules
+    environment:
+      FAST_REFRESH: true
+      CHOKIDAR_USEPOLLING: true
+
+  database:
+    ports:
+      - "5432:5432"  # Expose database port for development tools
